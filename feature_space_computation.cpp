@@ -41,34 +41,26 @@ using Distance = typename Knn::Distance;
 
 int main (int argc, char** argv)
 {
+  const char* fname = (argc>1)?argv[1]:"gret-sdp-data/point_cloud.ply";
+
   constexpr unsigned int nb_neighbors = 6;
 
   Point_range points;
   CGAL::Identity_property_map<Point_3> point_map;
-  // Property maps are used to handle different types of input while
-  // still getting CGAL Point_3 objects. In that case, I use a vector
-  // of CGAL Point_3, so there's nothing to do, hence "identity"
 
-  // TODO 1. Read your input points using either:
-  if(argc != 2){
-        std::cout << "execute program using: " << "./gret-sdp_with_OpenGR" << " <config/file/path>" << std::endl;
-        return EXIT_FAILURE;
-    }
+  // Read input poins
+  std::ifstream input(fname);
+  if (!input ||
+      !CGAL::read_ply_points(input, std::back_inserter(points),
+            CGAL::parameters::point_map (CGAL::Identity_property_map<Point_3>())))
+  {
+    std::cerr << "Error: cannot read file " << fname << std::endl;
+    return EXIT_FAILURE;
+  }
+  input.close();
 
-    std::string fname(argv[1]);
-
-    std::ifstream input(fname);
-    if (!input ||
-        !CGAL::read_ply_points(input, std::back_inserter(points),
-              CGAL::parameters::point_map (CGAL::Identity_property_map<Point_3>())))
-    {
-      std::cerr << "Error: cannot read file " << fname << std::endl;
-      return EXIT_FAILURE;
-    }
-    input.close();
-
-    for (const Point_3& point : points)
-      std::cout << point.x() << ", " << point.y() << ", " << point.z() << std::endl;
+  for (const Point_3& point : points)
+    std::cout << point.x() << ", " << point.y() << ", " << point.z() << std::endl;
     
 
   // This creates a 3D neighborhood + computes eigenvalues
@@ -85,7 +77,7 @@ int main (int argc, char** argv)
   features.reserve (points.size());
   for (std::size_t i = 0; i < points.size(); ++ i)
   {
-    // use Local_eigen_analysis::eigenvalue()
+    features.emplace_back(eigen.eigenvalue(i)[0], eigen.eigenvalue(i)[1], eigen.eigenvalue(i)[2]);
   }
 
   // This constructs a KD tree in N dimensions (here it's 3 but it
