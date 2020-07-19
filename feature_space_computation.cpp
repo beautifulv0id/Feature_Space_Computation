@@ -50,99 +50,82 @@ using Kd_tree = typename Knn::Tree;
 using Splitter = typename Knn::Splitter;
 using Distance = typename Knn::Distance;
 
-template <typename TrRange>
-void readPLYsFromConfigFile(const std::string& configFilePath, TrRange& transformations){
+template <typename PCRange, typename PointMap>
+void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range, const PointMap& point_map){
     const std::string workingDir = fs::path(configFilePath).parent_path().native();
 
     pt::ptree root;
     pt::read_json(configFilePath, root);
 
-    int n = root.get<int>("n");
     int m = root.get<int>("m");
     int d = root.get<int>("d");
 
-    problem.n = n;
-    problem.m = m;
-    problem.d = d;
 
-    vector< string  > patchFiles;
+    std::vector< std::string  > pcs_fnames;
 
-    for (pt::ptree::value_type &item : root.get_child("patches"))
+    for (pt::ptree::value_type &item : root.get_child("pcs"))
     {
-        patchFiles.push_back(item.second.data());
+        pcs_fnames.push_back(item.second.data());
     }
 
-    if(patchFiles.size() != m)
-        throw runtime_error("Number of patches m and number of given patch files is not the same.");
+    if(pcs_fnames.size() != m)
+        throw std::runtime_error("Number of patches m and number of given patch files is not the same.");
 
-    if(d != Dim)
-        throw runtime_error("Dimension of point type has to be " + to_string(Dim));
 
     // read patch files
-    problem.patches.resize(m);
-    ifstream patch_file;
+    pc_range.resize(m);
+    std::ifstream pc_file;
     for(int i = 0; i < m; i++){
-        readPatch(workingDir + "/" + patchFiles[i], problem.patches[i]);
+        pc_file.open(workingDir + "/" + pcs_fnames[i]);
+        if(!pc_file ||
+            !CGAL::read_ply_points(pc_file, std::back_inserter(pc_range[i]), point_map))
+        {
+          std::cerr << "Error: cannot read file " << workingDir + "/" + pcs_fnames[i] << std::endl;
+          throw std::exception();
+        }
+        pc_file.close();
     }
-    
-    vector< string  > transformationFiles;
-    for (pt::ptree::value_type &item : root.get_child("gt_trafos"))
-        transformationFiles.push_back(item.second.data());
-
-    if(transformationFiles.size() != m)
-        throw runtime_error("Number of transformations and number of given transformation files is not the same.");
-
-    transformations.reserve(m);
-    gr_TrafoType trafo;
-    for(int i = 0; i < m; i++){
-        readTransformation(workingDir + "/" + transformationFiles[i], trafo);
-        transformations.emplace_back(trafo);
-    }
-
 }
 
 
 int main (int argc, char** argv)
 {
-  const char* config_fname = (argc>1)?argv[1]:"gret-sdp-data/sprial_config.json";
+  const char* config_fname = (argc>1)?argv[1]:"gret-sdp-data/spiral_config.json";
 
   constexpr unsigned int nb_neighbors = 6;
 
   std::vector<Point_range> point_ranges;
   CGAL::Identity_property_map<Point_3> point_map;
 
-
-  // Read input poins
-  std::ifstream input(fname);
-  if (!input ||
-      !CGAL::read_ply_points(input, std::back_inserter(points),
-            CGAL::parameters::point_map (CGAL::Identity_property_map<Point_3>())))
-  {
-    std::cerr << "Error: cannot read file " << fname << std::endl;
-    return EXIT_FAILURE;
-  }
-  input.close();
-
-  for (const Point_3& point : points)
-    std::cout << point.x() << ", " << point.y() << ", " << point.z() << std::endl;
-    
+  readPLYsFromConfigFile(config_fname, point_ranges, point_map);
+  int m = point_ranges.size();
 
   // This creates a 3D neighborhood + computes eigenvalues
-  Neighborhood neighborhood (points, point_map);
-  Eigen_analysis eigen = Eigen_analysis::create_from_point_set
-    (points, point_map, neighborhood.k_neighbor_query(nb_neighbors));
-  // If you want to use a fixed radius instead of KNN, use:
-  // Eigen_analysis eigen = Eigen_analysis::create_from_point_set
-  //   (points, point_map, neighborhood.sphere_neighbor_query(radius));
-
-
-  // TODO 2. Populate features with the eigenvalues for each point
-  Feature_range features;
-  features.reserve (points.size());
-  for (std::size_t i = 0; i < points.size(); ++ i)
+  std::vector<Feature_range> feature_ranges;
+  feature_ranges.reserve(m);
+  for (int i = 0; i < m; ++i)
   {
-    features.emplace_back(eigen.eigenvalue(i)[0], eigen.eigenvalue(i)[1], eigen.eigenvalue(i)[2]);
+    const Point_range& point_range = point_ranges[i];
+    feature_ranges.push_back(Feature_range());
+
+    Neighborhood neighborhood = Neighborhood(point_range, point_map);
+    Eigen_analysis eigen = Eigen_analysis::create_from_point_set
+      (point_range, point_map, neighborhood.k_neighbor_query(nb_neighbors));
+    // If you want to use a fixed radius instead of KNN, use:
+    // Eigen_analysis eigen = Eigen_analysis::create_from_point_set
+    //   (points, point_map, neighborhood.sphere_neighbor_query(radius));
+    // TODO 2. Populate features with the eigenvalues for each point
+    
+    Eigen_analysis::Eigenvalues eigenval;
+    feature_ranges[i].reserve(point_range.size());
+    for (std::size_t j = 0; j < point_range.size(); ++ j)
+    {
+      eigenval = eigen.eigenvalue(j);
+      feature_ranges[i].emplace_back(eigenval[0], eigenval[1], eigenval[2]);
+    }
   }
+  
+  
 
   // This constructs a KD tree in N dimensions (here it's 3 but it
   // could be any dimension). Here, I'm using a trick: the KD tree
@@ -151,37 +134,37 @@ int main (int argc, char** argv)
   // allows, when querying the KD tree, to get the *index* of the
   // closest point (instead of the coordinates of the point itself,
   // which would be useless for you).
-  Point_d_map point_d_map = CGAL::make_property_map(features);
-  Kd_tree tree (boost::counting_iterator<std::size_t>(0),
-                boost::counting_iterator<std::size_t>(features.size()),
-                Splitter(),
-                Search_traits(point_d_map));
-  Distance dist (point_d_map);
-  tree.build();
+  // Point_d_map point_d_map = CGAL::make_property_map(features);
+  // Kd_tree tree (boost::counting_iterator<std::size_t>(0),
+  //               boost::counting_iterator<std::size_t>(features.size()),
+  //               Splitter(),
+  //               Search_traits(point_d_map));
+  // Distance dist (point_d_map);
+  // tree.build();
 
-  std::vector<std::size_t> closest_point_in_feature_space (points.size());
+  // std::vector<std::size_t> closest_point_in_feature_space (point_ranges[0].size());
 
-  // TODO 3. Find closest points in feature spaces (I imagine you
-  // should have one KD Tree per point cloud)
-  for (std::size_t i = 0; i < points.size(); ++ i)
-  {
-    const Point_d& features_of_point_i = features[i];
+  // // TODO 3. Find closest points in feature spaces (I imagine you
+  // // should have one KD Tree per point cloud)
+  // for (std::size_t i = 0; i < point_ranges[0].size(); ++ i)
+  // {
+  //   const Point_d& features_of_point_i = features[i];
 
-    // Do the nearest neighbor query
-    Knn knn (tree, // using the tree
-             features_of_point_i, // for query point i
-             1, // searching for 1 nearest neighbor only
-             0, true, dist); // default parameters
+  //   // Do the nearest neighbor query
+  //   Knn knn (tree, // using the tree
+  //            features_of_point_i, // for query point i
+  //            1, // searching for 1 nearest neighbor only
+  //            0, true, dist); // default parameters
 
-    // You get the index of the nearest point. If you constructed the
-    // KD tree directly on the feature point (without counting
-    // iterator), you would have a Point_d type returned.
-    std::size_t index_of_nearest_neighbor
-      = knn.begin()->first;
-    std::cout << "query index: " << i << " nn-index: " << index_of_nearest_neighbor << std::endl;
-  }
+  //   // You get the index of the nearest point. If you constructed the
+  //   // KD tree directly on the feature point (without counting
+  //   // iterator), you would have a Point_d type returned.
+  //   std::size_t index_of_nearest_neighbor
+  //     = knn.begin()->first;
+  //   std::cout << "query index: " << i << " nn-index: " << index_of_nearest_neighbor << std::endl;
+  // }
 
-  // TODO 4. Call CGAL wrapper with feature
+  // // TODO 4. Call CGAL wrapper with feature
 
 
   return EXIT_SUCCESS;

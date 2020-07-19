@@ -6,6 +6,7 @@ project( test_cmake )
 cmake_minimum_required(VERSION 2.8.11)
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/")
+include("${CMAKE_SOURCE_DIR}/cmake/local_vars.cmake")
 
 
 ###############################################################################
@@ -38,9 +39,12 @@ endif()
 include( ${CGAL_USE_FILE} )
 
 # Boost and its components
-find_package( Boost REQUIRED )
+find_package(Boost 1.54 COMPONENTS system filesystem  REQUIRED)
 
-if ( NOT Boost_FOUND )
+if ( Boost_FOUND )
+  include_directories(${Boost_INCLUDE_DIRS})
+  list(APPEND project_linked_libraries ${Boost_FILESYSTEM_LIBRARY} ${Boost_SYSTEM_LIBRARY})
+else()
   message(STATUS "This project requires the Boost library, and will not be compiled.")
   return()  
 endif()
@@ -58,7 +62,7 @@ endif()
 find_package(MOSEK)
 if ( MOSEK_FOUND )
   include_directories(MOSEK_INCLUDE_DIR)
-  list(APPEND ${project_linked_libraries} ${MOSEK_LIBRARIES})
+  list(APPEND project_linked_libraries ${MOSEK_LIBRARIES})
 else()
   message(STATUS "This project requires the MOSEK library, and will not be compiled.")
   return()  

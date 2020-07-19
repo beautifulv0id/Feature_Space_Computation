@@ -26,3 +26,11 @@
     - for every neighbor:
         - only add if it can be matched back
         - probably rejects loads of correspondences
+
+- needed:
+    - kd tree for every pc in `kd_tree_range`
+    - features for every pc in `feature_range`
+    - 
+
+### NOW 
+- ADD KD TREE RANGE
