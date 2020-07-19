@@ -7,10 +7,22 @@
 #include <CGAL/Search_traits_d.h>
 
 #include <CGAL/IO/read_ply_points.h>
+#include <CGAL/IO/write_ply_points.h>
 
 #include <fstream>
 #include <iostream>
 #include <utility>
+#include <vector>
+#include <string>
+
+
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/filesystem.hpp>
+#include "boost/tuple/tuple.hpp"
+
+namespace pt = boost::property_tree;
+namespace fs = boost::filesystem;
 
 // For computations 3D space
 using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
@@ -38,15 +50,67 @@ using Kd_tree = typename Knn::Tree;
 using Splitter = typename Knn::Splitter;
 using Distance = typename Knn::Distance;
 
+template <typename TrRange>
+void readPLYsFromConfigFile(const std::string& configFilePath, TrRange& transformations){
+    const std::string workingDir = fs::path(configFilePath).parent_path().native();
+
+    pt::ptree root;
+    pt::read_json(configFilePath, root);
+
+    int n = root.get<int>("n");
+    int m = root.get<int>("m");
+    int d = root.get<int>("d");
+
+    problem.n = n;
+    problem.m = m;
+    problem.d = d;
+
+    vector< string  > patchFiles;
+
+    for (pt::ptree::value_type &item : root.get_child("patches"))
+    {
+        patchFiles.push_back(item.second.data());
+    }
+
+    if(patchFiles.size() != m)
+        throw runtime_error("Number of patches m and number of given patch files is not the same.");
+
+    if(d != Dim)
+        throw runtime_error("Dimension of point type has to be " + to_string(Dim));
+
+    // read patch files
+    problem.patches.resize(m);
+    ifstream patch_file;
+    for(int i = 0; i < m; i++){
+        readPatch(workingDir + "/" + patchFiles[i], problem.patches[i]);
+    }
+    
+    vector< string  > transformationFiles;
+    for (pt::ptree::value_type &item : root.get_child("gt_trafos"))
+        transformationFiles.push_back(item.second.data());
+
+    if(transformationFiles.size() != m)
+        throw runtime_error("Number of transformations and number of given transformation files is not the same.");
+
+    transformations.reserve(m);
+    gr_TrafoType trafo;
+    for(int i = 0; i < m; i++){
+        readTransformation(workingDir + "/" + transformationFiles[i], trafo);
+        transformations.emplace_back(trafo);
+    }
+
+}
+
 
 int main (int argc, char** argv)
 {
-  const char* fname = (argc>1)?argv[1]:"gret-sdp-data/point_cloud.ply";
+  const char* config_fname = (argc>1)?argv[1]:"gret-sdp-data/sprial_config.json";
 
   constexpr unsigned int nb_neighbors = 6;
 
-  Point_range points;
+  std::vector<Point_range> point_ranges;
   CGAL::Identity_property_map<Point_3> point_map;
+
 
   // Read input poins
   std::ifstream input(fname);
@@ -114,6 +178,7 @@ int main (int argc, char** argv)
     // iterator), you would have a Point_d type returned.
     std::size_t index_of_nearest_neighbor
       = knn.begin()->first;
+    std::cout << "query index: " << i << " nn-index: " << index_of_nearest_neighbor << std::endl;
   }
 
   // TODO 4. Call CGAL wrapper with feature

@@ -1,1 +1,0 @@
-/usr/bin/c++  -O3 -DNDEBUG  -rdynamic CMakeFiles/feature_space_computation.dir/feature_space_computation.cpp.o  -o feature_space_computation  -lmpfr -lgmp 
