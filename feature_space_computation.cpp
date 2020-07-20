@@ -49,6 +49,7 @@ using Knn = CGAL::Orthogonal_k_neighbor_search<Search_traits>;
 using Kd_tree = typename Knn::Tree;
 using Splitter = typename Knn::Splitter;
 using Distance = typename Knn::Distance;
+using Kd_tree_sptr = std::unique_ptr<Kd_tree>;
 
 template <typename PCRange, typename PointMap>
 void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range, const PointMap& point_map){
@@ -98,12 +99,12 @@ int main (int argc, char** argv)
   CGAL::Identity_property_map<Point_3> point_map;
 
   readPLYsFromConfigFile(config_fname, point_ranges, point_map);
-  int m = point_ranges.size();
+  int num_point_clouds = point_ranges.size();
 
   // This creates a 3D neighborhood + computes eigenvalues
   std::vector<Feature_range> feature_ranges;
-  feature_ranges.reserve(m);
-  for (int i = 0; i < m; ++i)
+  feature_ranges.reserve(num_point_clouds);
+  for (int i = 0; i < num_point_clouds; ++i)
   {
     const Point_range& point_range = point_ranges[i];
     feature_ranges.push_back(Feature_range());
@@ -124,9 +125,6 @@ int main (int argc, char** argv)
       feature_ranges[i].emplace_back(eigenval[0], eigenval[1], eigenval[2]);
     }
   }
-  
-  
-
   // This constructs a KD tree in N dimensions (here it's 3 but it
   // could be any dimension). Here, I'm using a trick: the KD tree
   // stores the indices of the points instead of the points themselves
@@ -134,6 +132,29 @@ int main (int argc, char** argv)
   // allows, when querying the KD tree, to get the *index* of the
   // closest point (instead of the coordinates of the point itself,
   // which would be useless for you).
+  std::vector<Kd_tree_sptr> tree_range;
+  std::vector<Distance> distances(num_point_clouds);
+  for (size_t i = 0; i < num_point_clouds; i++)
+  {
+    Point_d_map point_d_map = CGAL::make_property_map(feature_ranges[i]);
+
+    Kd_tree kd_tree* = new Kd_tree(
+      boost::counting_iterator<std::size_t>(0), boost::counting_iterator<std::size_t>(feature_ranges[i].size()),
+      Splitter(), Search_traits(point_d_map)
+    );
+
+    tree_range.emplace_back( kd_tree );
+    distances.emplace_back(point_d_map)
+    kd_tree->build();
+  }
+  
+  
+  
+
+
+
+
+  
   // Point_d_map point_d_map = CGAL::make_property_map(features);
   // Kd_tree tree (boost::counting_iterator<std::size_t>(0),
   //               boost::counting_iterator<std::size_t>(features.size()),
