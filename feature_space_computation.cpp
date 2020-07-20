@@ -15,11 +15,14 @@
 #include <vector>
 #include <string>
 
+#include <Eigen/Dense>
 
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/filesystem.hpp>
 #include "boost/tuple/tuple.hpp"
+
+#include <unordered_map>
 
 namespace pt = boost::property_tree;
 namespace fs = boost::filesystem;
@@ -50,6 +53,12 @@ using Kd_tree = typename Knn::Tree;
 using Splitter = typename Knn::Splitter;
 using Distance = typename Knn::Distance;
 using Kd_tree_sptr = std::unique_ptr<Kd_tree>;
+
+const Knn::FT average_feature_diff = 0.000301027;
+const Knn::FT max_feature_diff = averate_feature_diff * 1.5;
+
+// matrix graph
+using MatrixX = Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>;
 
 template <typename PCRange, typename PointMap>
 void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range, const PointMap& point_map){
@@ -83,6 +92,8 @@ void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range
         {
           std::cerr << "Error: cannot read file " << workingDir + "/" + pcs_fnames[i] << std::endl;
           throw std::exception();
+        } else {
+          std::cout << "Read ply-file: " << workingDir + "/" + pcs_fnames[i] << std::endl;
         }
         pc_file.close();
     }
@@ -102,6 +113,7 @@ int main (int argc, char** argv)
   int num_point_clouds = point_ranges.size();
 
   // This creates a 3D neighborhood + computes eigenvalues
+  std::cout << "Computing feature ranges" << std::endl;
   std::vector<Feature_range> feature_ranges;
   feature_ranges.reserve(num_point_clouds);
   for (int i = 0; i < num_point_clouds; ++i)
@@ -132,37 +144,68 @@ int main (int argc, char** argv)
   // allows, when querying the KD tree, to get the *index* of the
   // closest point (instead of the coordinates of the point itself,
   // which would be useless for you).
+  std::cout << "Constructing kd-trees" << std::endl;
   std::vector<Kd_tree_sptr> tree_range;
-  std::vector<Distance> distances(num_point_clouds);
+  std::vector<Distance> distances;
+  tree_range.reserve(num_point_clouds);
+  distances.reserve(num_point_clouds);
   for (size_t i = 0; i < num_point_clouds; i++)
   {
     Point_d_map point_d_map = CGAL::make_property_map(feature_ranges[i]);
 
-    Kd_tree kd_tree* = new Kd_tree(
+    Kd_tree* kd_tree = new Kd_tree(
       boost::counting_iterator<std::size_t>(0), boost::counting_iterator<std::size_t>(feature_ranges[i].size()),
       Splitter(), Search_traits(point_d_map)
     );
 
     tree_range.emplace_back( kd_tree );
-    distances.emplace_back(point_d_map)
+    distances.emplace_back( point_d_map );
     kd_tree->build();
   }
   
+  // compute correspondences
+  std::cout << "Computing correspondences" << std::endl;
+  uint sum_of_point_cloud_sizes = 0;
+  for (const auto& point_range : point_ranges)
+    sum_of_point_cloud_sizes += point_range.size();
   
+  MatrixX feature_graph = MatrixX::Zero(sum_of_point_cloud_sizes, sum_of_point_cloud_sizes);
+  double dist_sum = 0;
+
+  // for every point cloud
+  for (size_t current_pc_index = 0; current_pc_index < num_point_clouds; current_pc_index++)
+  {
+    Feature_range& feature_range = feature_ranges[current_pc_index];
+    // compare to every other point cloud k
+    for (size_t other_pc_index = 0; other_pc_index < num_point_clouds; other_pc_index++)
+    {
+      if(other_pc_index != current_pc_index){
+        Kd_tree& tree = *tree_range[other_pc_index]; 
+        // every point in current point cloud
+        for (size_t j = 0; j < point_ranges[current_pc_index].size(); j++)
+        {
+            const Point_d& features_of_point_j = feature_range[j];
+            // Do the nearest neighbor query
+            Knn knn (tree, // using the tree
+                    features_of_point_j, // for query point i
+                    1, // searching for 1 nearest neighbor only
+                    0, true, distances[other_pc_index]); // default parameters
+
+            // index of nearest neighbor
+            std::size_t index_of_nearest_neighbor
+              = knn.begin()->first;
+            // distance between points
+            Knn::FT distance = knn.begin()->second;
+
+            dist_sum += distance;        
+        }
+      }
+    }
+  }
   
-
-
-
-
+  std::cout << "dist sum: " << dist_sum << std::endl;
+  std::cout << "average distance: " << dist_sum / (double) sum_of_point_cloud_sizes << std::endl;
   
-  // Point_d_map point_d_map = CGAL::make_property_map(features);
-  // Kd_tree tree (boost::counting_iterator<std::size_t>(0),
-  //               boost::counting_iterator<std::size_t>(features.size()),
-  //               Splitter(),
-  //               Search_traits(point_d_map));
-  // Distance dist (point_d_map);
-  // tree.build();
-
   // std::vector<std::size_t> closest_point_in_feature_space (point_ranges[0].size());
 
   // // TODO 3. Find closest points in feature spaces (I imagine you
