@@ -55,10 +55,30 @@ using Distance = typename Knn::Distance;
 using Kd_tree_sptr = std::unique_ptr<Kd_tree>;
 
 const Knn::FT average_feature_diff = 0.000301027;
-const Knn::FT max_feature_diff = averate_feature_diff * 1.5;
+const Knn::FT max_feature_diff = average_feature_diff * 1.5;
 
 // matrix graph
 using MatrixX = Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>;
+
+
+// A hash function used to hash a pair of any kind 
+struct hash_pair { 
+    template <class T1, class T2> 
+    size_t operator()(const std::pair<T1, T2>& p) const
+    { 
+        auto hash1 = std::hash<T1>{}(p.first); 
+        auto hash2 = std::hash<T2>{}(p.second); 
+        return hash1 ^ hash2; 
+    } 
+};
+
+// map
+// key: (pc_idx, curr_idx)
+// val: (other_idx, dist)
+using Map = std::unordered_map<std::pair<uint, uint>, std::pair<uint, double>, hash_pair>;
+using Map_iterator = typename Map::iterator;
+using Map_value_type = typename Map::value_type::second_type;
+
 
 template <typename PCRange, typename PointMap>
 void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range, const PointMap& point_map){
@@ -93,18 +113,33 @@ void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range
           std::cerr << "Error: cannot read file " << workingDir + "/" + pcs_fnames[i] << std::endl;
           throw std::exception();
         } else {
-          std::cout << "Read ply-file: " << workingDir + "/" + pcs_fnames[i] << std::endl;
+          std::cout << "Read ply-file: " << workingDir + "/" + pcs_fnames[i] << "\t" << pc_range[i].size() << std::endl;
         }
         pc_file.close();
     }
 }
 
 
+void removeCorrespondence(Eigen::Ref<MatrixX> feature_graph, int x, int y){
+  feature_graph(x,y) -= 1;
+  feature_graph(y,x) -= 1;
+  feature_graph(x,x) -= 1;
+  feature_graph(y,y) -= 1;
+}
+
+void addCorrespondence(Eigen::Ref<MatrixX> feature_graph, int x, int y){
+  feature_graph(x,y) += 1;
+  feature_graph(y,x) += 1;
+  feature_graph(x,x) += 1;
+  feature_graph(y,y) += 1;
+}
+
+
 int main (int argc, char** argv)
 {
-  const char* config_fname = (argc>1)?argv[1]:"gret-sdp-data/spiral_config.json";
+  const char* config_fname = (argc>1)?argv[1]:"gret-sdp-data/small_spiral_config.json";
 
-  constexpr unsigned int nb_neighbors = 6;
+  constexpr unsigned int nb_neighbors = 3;
 
   std::vector<Point_range> point_ranges;
   CGAL::Identity_property_map<Point_3> point_map;
@@ -166,28 +201,44 @@ int main (int argc, char** argv)
   // compute correspondences
   std::cout << "Computing correspondences" << std::endl;
   uint sum_of_point_cloud_sizes = 0;
-  for (const auto& point_range : point_ranges)
+  std::vector<uint> pc_start_index;
+  pc_start_index.reserve(num_point_clouds);
+  for (const auto& point_range : point_ranges){
+    pc_start_index.push_back(sum_of_point_cloud_sizes);
     sum_of_point_cloud_sizes += point_range.size();
-  
+  }
+  // feature graph
   MatrixX feature_graph = MatrixX::Zero(sum_of_point_cloud_sizes, sum_of_point_cloud_sizes);
-  double dist_sum = 0;
 
+  // hash maps
+  std::vector<Map> map_range;
+  map_range.reserve(num_point_clouds);
+  for (int i = 0; i < num_point_clouds; i++)
+    map_range.push_back(Map());
+  
+  // comute correspondences
   // for every point cloud
   for (size_t current_pc_index = 0; current_pc_index < num_point_clouds; current_pc_index++)
   {
     Feature_range& feature_range = feature_ranges[current_pc_index];
+    Map& current_map = map_range[current_pc_index];
+    Map_iterator current_map_it;
+    uint current_pc_start_index = pc_start_index[current_pc_index];
     // compare to every other point cloud k
     for (size_t other_pc_index = 0; other_pc_index < num_point_clouds; other_pc_index++)
     {
       if(other_pc_index != current_pc_index){
         Kd_tree& tree = *tree_range[other_pc_index]; 
+        Map& other_map = map_range[other_pc_index];
+        Map_iterator other_map_it;
+        uint other_pc_start_index = pc_start_index[other_pc_index];
         // every point in current point cloud
-        for (size_t j = 0; j < point_ranges[current_pc_index].size(); j++)
+        for (size_t current_point_index = 0; current_point_index < point_ranges[current_pc_index].size(); current_point_index++)
         {
-            const Point_d& features_of_point_j = feature_range[j];
+            const Point_d& current_point_features = feature_range[current_point_index];
             // Do the nearest neighbor query
             Knn knn (tree, // using the tree
-                    features_of_point_j, // for query point i
+                    current_point_features, // for query point i
                     1, // searching for 1 nearest neighbor only
                     0, true, distances[other_pc_index]); // default parameters
 
@@ -195,17 +246,70 @@ int main (int argc, char** argv)
             std::size_t index_of_nearest_neighbor
               = knn.begin()->first;
             // distance between points
-            Knn::FT distance = knn.begin()->second;
+            double current_dist = knn.begin()->second;
 
-            dist_sum += distance;        
+            // search other point in map
+            other_map_it = other_map.find(std::make_pair(current_pc_index, index_of_nearest_neighbor));
+
+
+            // if not found add correspondence
+            if(other_map_it == current_map.end()){
+              // update graph
+              addCorrespondence( 
+                feature_graph,
+                other_pc_start_index + index_of_nearest_neighbor, 
+                current_pc_start_index + current_point_index
+              );
+
+              std::cout << "add correspondence: " << "(" << current_pc_start_index + current_point_index << ", " <<
+              other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+
+              // update map of other point cloud
+              other_map[std::make_pair(current_pc_index, index_of_nearest_neighbor)]
+               = std::make_pair(current_pc_start_index + current_point_index, current_dist);
+            } 
+            // if found check if distance is smaller
+            else {
+                Map_value_type prev_idx_with_dist = other_map_it->second;
+                uint prev_idx = get<uint>(prev_idx_with_dist);
+                double prev_dist = get<double>(prev_idx_with_dist);
+                // if smaller: add current correspondence/ remove prev and update map
+                if(current_dist < prev_dist){
+                  addCorrespondence( 
+                    feature_graph,
+                    other_pc_start_index + index_of_nearest_neighbor, 
+                    current_pc_start_index + current_point_index
+                  );
+                  std::cout << "add correspondence: " << "(" << current_pc_start_index + current_point_index << ", " <<
+                  other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+
+                  removeCorrespondence(
+                    feature_graph,
+                    other_pc_start_index + index_of_nearest_neighbor,
+                    prev_idx
+                  );
+                  std::cout << "remove correspondence: " << "(" << prev_idx << ", " <<
+                  other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+                  
+                  other_map[std::make_pair(current_pc_index, index_of_nearest_neighbor)]
+                    = std::make_pair(current_pc_start_index + current_point_index, current_dist);
+                } else {
+                  std::cout << "previous dist is smaller for point: " <<  "(" << current_pc_start_index + current_point_index << ", " << 
+                  other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+                }
+            }
+            std::cout << "feature_graph: " << std::endl;
+            std::cout << feature_graph << std::endl;
         }
       }
     }
   }
+
+  std::cout << "feature_graph: " << std::endl;
+  std::cout << feature_graph << std::endl;
+
   
-  std::cout << "dist sum: " << dist_sum << std::endl;
-  std::cout << "average distance: " << dist_sum / (double) sum_of_point_cloud_sizes << std::endl;
-  
+
   // std::vector<std::size_t> closest_point_in_feature_space (point_ranges[0].size());
 
   // // TODO 3. Find closest points in feature spaces (I imagine you
