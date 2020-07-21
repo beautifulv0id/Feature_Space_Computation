@@ -220,7 +220,8 @@ int main (int argc, char** argv)
   // for every point cloud
   for (size_t current_pc_index = 0; current_pc_index < num_point_clouds; current_pc_index++)
   {
-    Feature_range& feature_range = feature_ranges[current_pc_index];
+    Kd_tree& current_tree = *tree_range[current_pc_index]; 
+    Feature_range& current_features = feature_ranges[current_pc_index];
     Map& current_map = map_range[current_pc_index];
     Map_iterator current_map_it;
     uint current_pc_start_index = pc_start_index[current_pc_index];
@@ -228,84 +229,100 @@ int main (int argc, char** argv)
     for (size_t other_pc_index = 0; other_pc_index < num_point_clouds; other_pc_index++)
     {
       if(other_pc_index != current_pc_index){
-        Kd_tree& tree = *tree_range[other_pc_index]; 
+        Kd_tree& other_tree = *tree_range[other_pc_index]; 
+        Feature_range& other_features = feature_ranges[other_pc_index];
         Map& other_map = map_range[other_pc_index];
         Map_iterator other_map_it;
         uint other_pc_start_index = pc_start_index[other_pc_index];
         // every point in current point cloud
         for (size_t current_point_index = 0; current_point_index < point_ranges[current_pc_index].size(); current_point_index++)
         {
-            const Point_d& current_point_features = feature_range[current_point_index];
+            const Point_d& current_point_features = current_features[current_point_index];
             // Do the nearest neighbor query
-            Knn knn (tree, // using the tree
+            Knn other_knn (other_tree, // using the tree
                     current_point_features, // for query point i
                     1, // searching for 1 nearest neighbor only
                     0, true, distances[other_pc_index]); // default parameters
 
             // index of nearest neighbor
             std::size_t index_of_nearest_neighbor
-              = knn.begin()->first;
+              = other_knn.begin()->first;
             // distance between points
-            double current_dist = knn.begin()->second;
-
-
+            double current_dist = other_knn.begin()->second;
 
 
             // to look if point has been added already
             current_map_it = current_map.find(std::make_pair(other_pc_index, current_point_index));
 
-            // if current point has no correspondence in other point cloud
+            // if point wasnt matched before
             if(current_map_it == current_map.end()){
               // search other point in map
               other_map_it = other_map.find(std::make_pair(current_pc_index, index_of_nearest_neighbor));
 
-              // if not found add correspondence
+              // if nn wasn't matches by point within same point cloud before
               if(other_map_it == other_map.end()){
-                // update graph
-                addCorrespondence( 
-                  feature_graph,
-                  other_pc_start_index + index_of_nearest_neighbor, 
-                  current_pc_start_index + current_point_index
-                );
+                const Point_d& nearest_neighbor_features = other_features[index_of_nearest_neighbor];
+                Knn current_knn (current_tree, // using the tree
+                    nearest_neighbor_features, // for query point i
+                    1, // searching for 1 nearest neighbor only
+                    0, true, distances[current_pc_index]); // default parameters
+                // index of nearest neighbor
+                std::size_t current_index_of_nearest_neighbor
+                  = current_knn.begin()->first;
 
-                std::cout << "add correspondence: " << "(" << current_pc_start_index + current_point_index << ", " <<
-                other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+                // if correspondence matches back add correspondence
+                if(current_index_of_nearest_neighbor == current_pc_index + current_point_index){
+                  // update graph
+                  addCorrespondence( 
+                    feature_graph,
+                    other_pc_start_index + index_of_nearest_neighbor, 
+                    current_pc_start_index + current_point_index
+                  );
 
-                // update maps
-                other_map[std::make_pair(current_pc_index, index_of_nearest_neighbor)]
-                = std::make_pair(current_pc_start_index + current_point_index, current_dist);
-                
-                current_map[std::make_pair(other_pc_index, current_point_index)] 
-                  = std::make_pair(other_pc_start_index + index_of_nearest_neighbor, current_dist);
+                  std::cout << "add correspondence: " << "(" << current_pc_start_index + current_point_index << ", " <<
+                  other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+
+                  // update maps
+                  other_map[std::make_pair(current_pc_index, index_of_nearest_neighbor)]
+                  = std::make_pair(current_pc_start_index + current_point_index, current_dist);
+                  
+                  current_map[std::make_pair(other_pc_index, current_point_index)] 
+                    = std::make_pair(other_pc_start_index + index_of_nearest_neighbor, current_dist);
+                }
+                // if nn doesnt match back
+                else {
+                  std::cout << "nearest neighbor doesnt match back " << std::endl;
+                }
               } 
-              // if found check if distance is smaller
+              // if nn was matched by point within same point cloud before
               else {
                   Map_value_type prev_idx_with_dist = other_map_it->second;
                   uint prev_idx = get<uint>(prev_idx_with_dist);
                   double prev_dist = get<double>(prev_idx_with_dist);
                   // if smaller: add current correspondence/ remove prev and update map
                   if(current_dist < prev_dist){
+                    std::cout << "add correspondence: " << "(" << current_pc_start_index + current_point_index << ", " <<
+                    other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+                    
                     addCorrespondence( 
                       feature_graph,
                       other_pc_start_index + index_of_nearest_neighbor, 
                       current_pc_start_index + current_point_index
                     );
-                    std::cout << "add correspondence: " << "(" << current_pc_start_index + current_point_index << ", " <<
-                    other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+                    other_map[std::make_pair(current_pc_index, index_of_nearest_neighbor)]
+                      = std::make_pair(current_pc_start_index + current_point_index, current_dist);
+                    current_map[std::make_pair(other_pc_index, current_point_index)] 
+                      = std::make_pair(other_pc_start_index + index_of_nearest_neighbor, current_dist);
 
+                    std::cout << "remove correspondence: " << "(" << prev_idx << ", " <<
+                    other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
                     removeCorrespondence(
                       feature_graph,
                       other_pc_start_index + index_of_nearest_neighbor,
                       prev_idx
                     );
-                    std::cout << "remove correspondence: " << "(" << prev_idx << ", " <<
-                    other_pc_start_index + index_of_nearest_neighbor << ")" << std::endl;
+                    current_map.erase(std::make_pair(other_pc_index, prev_idx));
 
-                    other_map[std::make_pair(current_pc_index, index_of_nearest_neighbor)]
-                      = std::make_pair(current_pc_start_index + current_point_index, current_dist);
-                    
-                    current_map[std::make_pair(other_pc_index, current_point_index)] 
-                      = std::make_pair(other_pc_start_index + index_of_nearest_neighbor, current_dist);
 
                   } else {
                     std::cout << "previous dist is smaller for point: " <<  "(" << current_pc_start_index + current_point_index << ", " << 
@@ -314,24 +331,25 @@ int main (int argc, char** argv)
               }
             }
             // if current point already has correspondence in other point cloud
-            else {
-              Map_value_type prev_idx_with_dist = current_map_it->second;
-              uint prev_idx = get<uint>(prev_idx_with_dist);
-              double prev_dist = get<double>(prev_idx_with_dist);
-              // if can't be matched back remove
-              if(other_pc_start_index + index_of_nearest_neighbor != prev_idx){
-                //remove
-                removeCorrespondence(
-                  feature_graph,
-                  current_pc_index + current_point_index,
-                  prev_idx
-                );
-                current_map.erase(current_map_it);
-              } else {
-                std::cout << "point matches back: " <<  "(" << current_pc_start_index + current_point_index << ", " << 
-                  prev_idx << ")" << std::endl;
-              }
-            }
+            // TODO: remove - point has already been checked
+            // else {
+            //   Map_value_type prev_idx_with_dist = current_map_it->second;
+            //   uint prev_idx = get<uint>(prev_idx_with_dist);
+            //   double prev_dist = get<double>(prev_idx_with_dist);
+            //   // if can't be matched back remove
+            //   if(other_pc_start_index + index_of_nearest_neighbor != prev_idx){
+            //     //remove
+            //     removeCorrespondence(
+            //       feature_graph,
+            //       current_pc_index + current_point_index,
+            //       prev_idx
+            //     );
+            //     current_map.erase(current_map_it);
+            //   } else {
+            //     std::cout << "point matches back: " <<  "(" << current_pc_start_index + current_point_index << ", " << 
+            //       prev_idx << ")" << std::endl;
+            //   }
+            // }
           std::cout << "feature_graph: " << std::endl;
           std::cout << feature_graph << std::endl;
         }
