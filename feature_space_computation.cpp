@@ -2,6 +2,9 @@
 #include <CGAL/Classification/Local_eigen_analysis.h>
 #include <CGAL/Classification/Point_set_neighborhood.h>
 
+#include <CGAL/boost/graph/Named_function_parameters.h>
+#include <CGAL/boost/graph/named_params_helper.h>
+
 #include <CGAL/Epick_d.h>
 #include <CGAL/Orthogonal_k_neighbor_search.h>
 #include <CGAL/Search_traits_d.h>
@@ -34,6 +37,10 @@ using Point_range = std::vector<Point_3>;
 using Neighborhood
 = CGAL::Classification::Point_set_neighborhood
   <Kernel, Point_range, CGAL::Identity_property_map<Point_3> >;
+// point with normal
+using Indexed_Point = std::pair<Point_3, int>;
+using Point_map = CGAL::First_of_pair_property_map<Indexed_Point>;
+using Index_map = CGAL::Second_of_pair_property_map<Indexed_Point>;
 
 using Eigen_analysis = CGAL::Classification::Local_eigen_analysis;
 
@@ -73,8 +80,8 @@ struct hash_pair {
 };
 
 // map
-// key: (pc_idx, curr_idx)
-// val: (other_idx, dist)
+// key: (pc_idx, curr_global_idx)
+// val: (other_global_idx, dist)
 using Map = std::unordered_map<std::pair<uint, uint>, std::pair<uint, double>, hash_pair>;
 using Map_iterator = typename Map::iterator;
 using Map_value_type = typename Map::value_type::second_type;
@@ -212,8 +219,6 @@ int main (int argc, char** argv)
 
   // hash maps
   std::vector<Map> map_range(num_point_clouds);
-  // number of global cooridinates
-  uint num_global_coordinates = 0;
   
   // comute correspondences
   // for every point cloud
@@ -313,8 +318,6 @@ int main (int argc, char** argv)
                       prev_index
                     );
                     current_pc_map.erase(std::make_pair(other_pc_index, prev_index));
-
-
                   }
               }
             }
@@ -326,6 +329,87 @@ int main (int argc, char** argv)
   std::cout << "feature_graph: " << std::endl;
   std::cout << feature_graph << std::endl;
 
+
+  // CALCULATE number of global coordinates
+  // number of global cooridinates
+  uint global_coordinate = 0;
+  int correspondences;
+  std::vector<std::vector<Indexed_Point>> patches(num_point_clouds);
+  int current_pc_point_global_index;
+  for (size_t current_pc_index = 0; current_pc_index < num_point_clouds; current_pc_index++)
+  {
+    std::vector<Indexed_Point>& current_patch = patches[current_pc_index];
+    Point_range& current_point_range = point_ranges[current_pc_index];
+    Map& current_pc_map = map_range[current_pc_index];
+    Map_iterator current_pc_map_it;
+    uint current_pc_start_index = pc_start_index[current_pc_index];
+    current_pc_point_global_index = pc_start_index[current_pc_index];
+
+    // for all points within current point cloud
+    for (size_t current_pc_point_index = 0; current_pc_point_index < point_ranges[current_pc_index].size(); 
+                current_pc_point_index++, current_pc_point_global_index++)
+    {
+      correspondences = feature_graph(current_pc_point_global_index, current_pc_point_global_index);
+      if (correspondences > 0){
+        // push back point
+        current_patch.push_back(std::make_pair(current_point_range[current_pc_point_index], global_coordinate));
+
+
+        // add other correspondences and update graph
+        for (size_t other_pc_index = 0; other_pc_index < num_point_clouds; other_pc_index++)
+        {
+          // search for correspondences
+          if(other_pc_index != current_pc_index){
+
+            current_pc_map_it = current_pc_map.find(std::make_pair(other_pc_index, current_pc_point_index));
+
+            // if correspondence was found add points to patches and update feature_graph
+            if(current_pc_map_it != current_pc_map.end()){
+              Point_range& other_point_range = point_ranges[other_pc_index];
+              std::vector<Indexed_Point>& other_patch = patches[other_pc_index];
+              uint other_pc_start_index = pc_start_index[other_pc_index];
+              uint other_pc_point_global_index = get<uint>(current_pc_map_it->second);
+              uint other_pc_point_index = other_pc_point_global_index - other_pc_start_index;
+              other_patch.push_back(std::make_pair(other_point_range[other_pc_point_index], global_coordinate));
+
+              removeCorrespondence(
+                feature_graph,
+                current_pc_point_global_index,
+                other_pc_point_global_index
+              );
+
+              // remove from maps
+              Map& other_pc_map = map_range[other_pc_index];
+              current_pc_map.erase(current_pc_map_it);
+              other_pc_map.erase(std::make_pair(current_pc_index, other_pc_point_index));
+            }
+          }
+        }
+
+        // increase number of global coorinates
+        global_coordinate++;
+      }
+    }
+  }
+  
+
+  int num_global_coordinates = global_coordinate - 1;
+  
+  std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl;
+
+  // Point_map i_point_map;
+  // Index_map i_index_map;
+  for (auto& patch : patches)
+  {
+    for (Indexed_Point& ipoint : patch)
+    {
+      Point_3& point = ipoint.first;
+      int& index = ipoint.second;
+      std::cout <<  index << "\t" << point.x() << " " << point.y() << " " << point.z() << std::endl;
+    }
+    
+  }
+  
   // // TODO 4. Call CGAL wrapper with feature
 
 
