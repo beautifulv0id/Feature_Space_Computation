@@ -115,7 +115,7 @@ void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range
     for(int i = 0; i < m; i++){
         pc_file.open(workingDir + "/" + pcs_fnames[i]);
         if(!pc_file ||
-            !CGAL::read_ply_points(pc_file, std::back_inserter(pc_range[i]), point_map))
+            !CGAL::read_ply_points(pc_file, std::back_inserter(pc_range[i]), CGAL::parameters::point_map(point_map)))
         {
           std::cerr << "Error: cannot read file " << workingDir + "/" + pcs_fnames[i] << std::endl;
           throw std::exception();
