@@ -295,31 +295,6 @@ int main (int argc, char** argv)
                     = std::make_pair(other_pc_start_index + other_pc_nn_index, current_dist);
                 }
               } 
-              // if nn was matched by point within same point cloud before
-              else {
-                  Map_value_type prev_index_with_dist = other_pc_map_it->second;
-                  uint prev_index = get<uint>(prev_index_with_dist);
-                  double prev_dist = get<double>(prev_index_with_dist);
-                  // if smaller: add current correspondence/ remove prev and update map
-                  if(current_dist < prev_dist){                    
-                    addCorrespondence( 
-                      feature_graph,
-                      other_pc_start_index + other_pc_nn_index, 
-                      current_pc_start_index + current_pc_point_index
-                    );
-                    other_pc_map[std::make_pair(current_pc_index, other_pc_nn_index)]
-                      = std::make_pair(current_pc_start_index + current_pc_point_index, current_dist);
-                    current_pc_map[std::make_pair(other_pc_index, current_pc_point_index)] 
-                      = std::make_pair(other_pc_start_index + other_pc_nn_index, current_dist);
-
-                    removeCorrespondence(
-                      feature_graph,
-                      other_pc_start_index + other_pc_nn_index,
-                      prev_index
-                    );
-                    current_pc_map.erase(std::make_pair(other_pc_index, prev_index));
-                  }
-              }
             }
         }
       }
