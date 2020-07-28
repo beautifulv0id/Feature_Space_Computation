@@ -48,7 +48,7 @@ using Index_map = CGAL::Second_of_pair_property_map<Indexed_Point>;
 using Eigen_analysis = CGAL::Classification::Local_eigen_analysis;
 
 // For computations in feature space
-constexpr unsigned int nb_neighbors = 3;
+constexpr unsigned int nb_neighbors = 8;
 constexpr unsigned int feature_space_dimension = 3;
 using Dimension = CGAL::Dimension_tag<feature_space_dimension>;
 using Kernel_d = CGAL::Epick_d<Dimension>;
@@ -63,7 +63,7 @@ using Knn = CGAL::Orthogonal_k_neighbor_search<Search_traits>;
 using Kd_tree = typename Knn::Tree;
 using Splitter = typename Knn::Splitter;
 using Distance = typename Knn::Distance;
-using Kd_tree_sptr = std::unique_ptr<Kd_tree>;
+using Kd_tree_sptr = std::shared_ptr<Kd_tree>;
 
 const Knn::FT average_feature_diff = 0.000301027;
 const Knn::FT max_feature_diff = average_feature_diff * 1.5;
@@ -131,8 +131,15 @@ void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range
 }
 
 
-void constructKdTree(const Feature_range& feature_range, const Kd_tree_sptr& tree, Distance& distance){
-
+void constructKdTree(Feature_range& feature_range, Kd_tree_sptr& tree, Distance& distance){
+  Point_d_map point_d_map = CGAL::make_property_map(feature_range);
+  tree.reset(
+    new Kd_tree(
+    boost::counting_iterator<std::size_t>(0), boost::counting_iterator<std::size_t>(feature_range.size()),
+    Splitter(), Search_traits(point_d_map)
+    ));
+  tree->build();
+  distance = Distance(point_d_map);
 }
 
 template <typename FeatureRange, typename PointRange, typename PointMap>
@@ -182,23 +189,10 @@ int main (int argc, char** argv)
   
   // This constructs a KD tree in N dimensions 
   std::cout << "Constructing kd-trees" << std::endl;
-  std::vector<Kd_tree_sptr> tree_range;
-  std::vector<Distance> distances;
-  tree_range.reserve(num_point_clouds);
-  distances.reserve(num_point_clouds);
+  std::vector<Kd_tree_sptr> tree_range(num_point_clouds);
+  std::vector<Distance> distances(num_point_clouds);
   for (size_t i = 0; i < num_point_clouds; i++)
-  {
-    Point_d_map point_d_map = CGAL::make_property_map(feature_ranges[i]);
-
-    Kd_tree* kd_tree = new Kd_tree(
-      boost::counting_iterator<std::size_t>(0), boost::counting_iterator<std::size_t>(feature_ranges[i].size()),
-      Splitter(), Search_traits(point_d_map)
-    );
-
-    tree_range.emplace_back( kd_tree );
-    distances.emplace_back( point_d_map );
-    kd_tree->build();
-  }
+    constructKdTree(feature_ranges[i], tree_range[i], distances[i]);
   
   // compute correspondences
   std::cout << "Computing correspondences" << std::endl;
@@ -296,10 +290,6 @@ int main (int argc, char** argv)
     }
   }
 
-  std::cout << "feature_graph: " << std::endl;
-  std::cout << feature_graph << std::endl;
-
-
   // CALCULATE number of global coordinates
   // number of global cooridinates
   uint global_coordinate = 0;
@@ -365,20 +355,7 @@ int main (int argc, char** argv)
 
   int num_global_coordinates = global_coordinate - 1;
   
-  std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl;
-
-  // Point_map i_point_map;
-  // Index_map i_index_map;
-  for (auto& patch : patches)
-  {
-    for (Indexed_Point& ipoint : patch)
-    {
-      Point_3& point = ipoint.first;
-      int& index = ipoint.second;
-      std::cout <<  index << "\t" << point.x() << " " << point.y() << " " << point.z() << std::endl;
-    }
-    
-  }
+  std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl
   
   // // TODO 4. Call CGAL wrapper with feature
   CGAL::OpenGR::GRET_SDP<Kernel> matcher;
