@@ -8,7 +8,7 @@
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/feature_space_computation",
+            "program": "${workspaceFolder}/build/correspondence_visualization",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build",

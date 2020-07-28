@@ -1,4 +1,9 @@
 {    
+    "cmake.configureSettings": {
+        "MOSEK_ROOT_DIR": "/home/felix/mosek/",
+        "OpenGR_DIR": "/home/felix/Workspace/GSoC20/OpenGR_Fork/build/install/lib/cmake",
+        "CGAL_DIR": "/home/felix/Workspace/GSoC20/cgal-felix/build/install/lib/cmake/CGAL"
+    },
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     "files.associations": {
         "cctype": "cpp",
