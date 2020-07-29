@@ -307,7 +307,7 @@ pcl::PointCloud<pcl::PointXYZ>::ConstPtr CGAL2PCL_Point_Cloud(const PointRange& 
 
 int main (int argc, char** argv)
 {
-  const char* config_fname = "build/gret-sdp-data/bunny_config.json";
+  const char* config_fname = (argc>1)?argv[1]:"gret-sdp-data/bunny_config.json";
 
   std::vector<Point_range> point_ranges;
   CGAL::Identity_property_map<Point_3> point_map;
