@@ -144,6 +144,12 @@ void readPLYsFromConfigFile(const std::string& configFilePath, PCRange& pc_range
     }
 }
 
+template <typename PointRange>
+void translatePointRange(PointRange& point_range, const Vector_3& vec){
+  for(auto& point : point_range){
+    point = point + vec;
+  }
+}
 
 void constructKdTree(Feature_range& feature_range, Kd_tree_sptr& tree, Distance& distance){
   Point_d_map point_d_map = CGAL::make_property_map(feature_range);
@@ -171,6 +177,121 @@ void computeFeatureRange(FeatureRange& feature_range, const PointRange& point_ra
   }
 }
 
+template <typename PointRanges, typename FeatureRanges, typename TreeRange, typename DistancesRange, typename PatchRange, typename CorrespondenceRange>
+int computePatchesAndCorrespondences(
+                            const PointRanges& point_ranges,
+                            const FeatureRanges& feature_ranges,
+                            const TreeRange& tree_range,
+                            const DistancesRange& distance_range,
+                            PatchRange& patch_range,
+                            CorrespondenceRange& correspondences_range){
+  uint num_point_clouds = point_ranges.size();
+  uint sum_of_point_cloud_sizes = 0;
+  std::vector<uint> pc_start_index;
+  pc_start_index.reserve(num_point_clouds);
+  for (const auto& point_range : point_ranges){
+    pc_start_index.push_back(sum_of_point_cloud_sizes);
+    sum_of_point_cloud_sizes += point_range.size();
+  }
+
+  // hash maps
+  std::vector<Map> map_range(num_point_clouds);
+
+  uint global_coordinate = 0;
+  bool has_been_added = false;
+  
+  // comute correspondences
+  // for every point cloud
+  for (size_t current_pc_index = 0; current_pc_index < num_point_clouds; current_pc_index++)
+  {
+    Kd_tree& current_pc_tree = *tree_range[current_pc_index]; 
+    const Feature_range& current_pc_features = feature_ranges[current_pc_index];
+    Map& current_pc_map = map_range[current_pc_index];
+    Map_iterator current_pc_map_it;
+    uint current_pc_start_index = pc_start_index[current_pc_index];
+    // every point in current point cloud
+    for (size_t current_pc_point_index = 0; current_pc_point_index < point_ranges[current_pc_index].size(); current_pc_point_index++)
+    {
+      has_been_added = false;
+      // compare to every other point cloud k
+      for (size_t other_pc_index = 0; other_pc_index < num_point_clouds; other_pc_index++)
+      {
+        if(other_pc_index != current_pc_index){
+          Kd_tree& other_pc_tree = *tree_range[other_pc_index]; 
+          const Feature_range& other_pc_features = feature_ranges[other_pc_index];
+          Map& other_pc_map = map_range[other_pc_index];
+          Map_iterator other_pc_map_it;
+          uint other_pc_start_index = pc_start_index[other_pc_index];
+
+          // used to look if point has been added already
+          current_pc_map_it = current_pc_map.find(std::make_pair(other_pc_index, current_pc_point_index));
+
+          // only if point wasn't matched before
+          if(current_pc_map_it == current_pc_map.end()){
+
+            const Point_d& current_pc_point_features = current_pc_features[current_pc_point_index];
+            // Do the nearest neighbor query
+            Knn other_pc_knn (other_pc_tree, // using the tree
+                    current_pc_point_features, // for query point i
+                    1, // searching for 1 nearest neighbor only
+                    0, true, distance_range[other_pc_index]); // default parameters
+
+            // index of nearest neighbor
+            std::size_t other_pc_nn_index
+              = other_pc_knn.begin()->first;
+            // distance between current point and nn in other point cloud
+            double current_dist = other_pc_knn.begin()->second;
+
+            // search other point in map
+            other_pc_map_it = other_pc_map.find(std::make_pair(current_pc_index, other_pc_nn_index));
+
+            // if nn wasn't matches by point within same point cloud before
+            if(other_pc_map_it == other_pc_map.end()){
+              // match back
+              const Point_d& nearest_neighbor_features = other_pc_features[other_pc_nn_index];
+              Knn current_knn (current_pc_tree, // using the tree
+                  nearest_neighbor_features, // for query point i
+                  1, // searching for 1 nearest neighbor only
+                  0, true, distance_range[current_pc_index]); // default parameters
+
+              // index of nearest neighbor
+              std::size_t current_pc_nn_index
+                = current_knn.begin()->first;
+
+              // if correspondence matches back add correspondence
+              if(current_pc_nn_index == (current_pc_index + current_pc_point_index)){
+                // update maps
+                other_pc_map[std::make_pair(current_pc_index, other_pc_nn_index)]
+                = std::make_pair(current_pc_start_index + current_pc_point_index, current_dist);
+                
+                current_pc_map[std::make_pair(other_pc_index, current_pc_point_index)] 
+                  = std::make_pair(other_pc_start_index + other_pc_nn_index, current_dist);
+
+                std::vector<std::pair<int, int>> correspondence;
+                if(!has_been_added){
+                  correspondence.push_back(std::make_pair(current_pc_index, patch_range[current_pc_index].size()));
+                  patch_range[current_pc_index].push_back(std::make_pair(point_ranges[current_pc_index][current_pc_point_index], global_coordinate));
+                }
+
+                // add other to other patch
+                correspondence.push_back(std::make_pair(other_pc_index, patch_range[other_pc_index].size()));
+                patch_range[other_pc_index].push_back(std::make_pair(point_ranges[other_pc_index][other_pc_nn_index], global_coordinate));
+
+                correspondences_range.push_back(std::move(correspondence));
+                has_been_added = true;
+              }
+            } 
+          }
+        }
+        if (has_been_added)
+          global_coordinate++;
+      }
+    }
+  }  
+
+  return global_coordinate - 1;
+}
+
 template <typename PointRange>
 pcl::PointCloud<pcl::PointXYZ>::ConstPtr CGAL2PCL_Point_Cloud(const PointRange& cgal_pcloud){
     PointCloudT::Ptr pcl_pcloud (new PointCloudT);
@@ -182,12 +303,7 @@ pcl::PointCloud<pcl::PointXYZ>::ConstPtr CGAL2PCL_Point_Cloud(const PointRange& 
     return pcl_pcloud;
 }
 
-template <typename PointRange>
-void translatePointRange(PointRange& point_range, const Vector_3& vec){
-  for(auto& point : point_range){
-    point = point + vec;
-  }
-}
+
 
 int main (int argc, char** argv)
 {
@@ -217,120 +333,21 @@ int main (int argc, char** argv)
   // This constructs a KD tree in N dimensions 
   std::cout << "Constructing kd-trees" << std::endl;
   std::vector<Kd_tree_sptr> tree_range(num_point_clouds);
-  std::vector<Distance> distances(num_point_clouds);
+  std::vector<Distance> distance_range(num_point_clouds);
   for (size_t i = 0; i < num_point_clouds; i++)
-    constructKdTree(feature_ranges[i], tree_range[i], distances[i]);
+    constructKdTree(feature_ranges[i], tree_range[i], distance_range[i]);
   
 
   // compute correspondences
   std::cout << "Computing correspondences" << std::endl;
-  uint sum_of_point_cloud_sizes = 0;
-  std::vector<uint> pc_start_index;
-  pc_start_index.reserve(num_point_clouds);
-  for (const auto& point_range : point_ranges){
-    pc_start_index.push_back(sum_of_point_cloud_sizes);
-    sum_of_point_cloud_sizes += point_range.size();
-  }
 
-  // hash maps
-  std::vector<Map> map_range(num_point_clouds);
-
-  bool has_been_added = false;
 
   uint global_coordinate = 0;
-  std::vector<std::vector<Indexed_Point>> patches(num_point_clouds);
+  std::vector<std::vector<Indexed_Point>> patch_range(num_point_clouds);
   std::vector<std::vector<std::pair<int, int>>> correspondences_range;
-  
-  // comute correspondences
-  // for every point cloud
-  for (size_t current_pc_index = 0; current_pc_index < num_point_clouds; current_pc_index++)
-  {
-    Kd_tree& current_pc_tree = *tree_range[current_pc_index]; 
-    Feature_range& current_pc_features = feature_ranges[current_pc_index];
-    Map& current_pc_map = map_range[current_pc_index];
-    Map_iterator current_pc_map_it;
-    uint current_pc_start_index = pc_start_index[current_pc_index];
-    // every point in current point cloud
-    for (size_t current_pc_point_index = 0; current_pc_point_index < point_ranges[current_pc_index].size(); current_pc_point_index++)
-    {
-      has_been_added = false;
-      // compare to every other point cloud k
-      for (size_t other_pc_index = 0; other_pc_index < num_point_clouds; other_pc_index++)
-      {
-        if(other_pc_index != current_pc_index){
-          Kd_tree& other_pc_tree = *tree_range[other_pc_index]; 
-          Feature_range& other_pc_features = feature_ranges[other_pc_index];
-          Map& other_pc_map = map_range[other_pc_index];
-          Map_iterator other_pc_map_it;
-          uint other_pc_start_index = pc_start_index[other_pc_index];
 
-          // used to look if point has been added already
-          current_pc_map_it = current_pc_map.find(std::make_pair(other_pc_index, current_pc_point_index));
+  int num_global_coordinates = computePatchesAndCorrespondences(point_ranges, feature_ranges, tree_range, distance_range, patch_range, correspondences_range);
 
-          // only if point wasn't matched before
-          if(current_pc_map_it == current_pc_map.end()){
-
-            const Point_d& current_pc_point_features = current_pc_features[current_pc_point_index];
-            // Do the nearest neighbor query
-            Knn other_pc_knn (other_pc_tree, // using the tree
-                    current_pc_point_features, // for query point i
-                    1, // searching for 1 nearest neighbor only
-                    0, true, distances[other_pc_index]); // default parameters
-
-            // index of nearest neighbor
-            std::size_t other_pc_nn_index
-              = other_pc_knn.begin()->first;
-            // distance between current point and nn in other point cloud
-            double current_dist = other_pc_knn.begin()->second;
-
-            // search other point in map
-            other_pc_map_it = other_pc_map.find(std::make_pair(current_pc_index, other_pc_nn_index));
-
-            // if nn wasn't matches by point within same point cloud before
-            if(other_pc_map_it == other_pc_map.end()){
-              // match back
-              const Point_d& nearest_neighbor_features = other_pc_features[other_pc_nn_index];
-              Knn current_knn (current_pc_tree, // using the tree
-                  nearest_neighbor_features, // for query point i
-                  1, // searching for 1 nearest neighbor only
-                  0, true, distances[current_pc_index]); // default parameters
-
-              // index of nearest neighbor
-              std::size_t current_pc_nn_index
-                = current_knn.begin()->first;
-
-              // if correspondence matches back add correspondence
-              if(current_pc_nn_index == (current_pc_index + current_pc_point_index)){
-                // update maps
-                other_pc_map[std::make_pair(current_pc_index, other_pc_nn_index)]
-                = std::make_pair(current_pc_start_index + current_pc_point_index, current_dist);
-                
-                current_pc_map[std::make_pair(other_pc_index, current_pc_point_index)] 
-                  = std::make_pair(other_pc_start_index + other_pc_nn_index, current_dist);
-
-                std::vector<std::pair<int, int>> correspondence;
-                if(!has_been_added){
-                  correspondence.push_back(std::make_pair(current_pc_index, patches[current_pc_index].size()));
-                  patches[current_pc_index].push_back(std::make_pair(point_ranges[current_pc_index][current_pc_point_index], global_coordinate));
-                }
-
-                // add other to other patch
-                correspondence.push_back(std::make_pair(other_pc_index, patches[other_pc_index].size()));
-                patches[other_pc_index].push_back(std::make_pair(point_ranges[other_pc_index][other_pc_nn_index], global_coordinate));
-
-                correspondences_range.push_back(std::move(correspondence));
-                has_been_added = true;
-              }
-            } 
-          }
-        }
-        if (has_been_added)
-          global_coordinate++;
-      }
-    }
-  }  
-
-  int num_global_coordinates = global_coordinate - 1;
   
   std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl;
 
@@ -347,8 +364,8 @@ int main (int argc, char** argv)
 
   for(int i = 0; i < correspondences_range.size(); i++){
     const std::vector<std::pair<int, int>>& correspondence = correspondences_range[i];
-    const Point_3& point1 = get<Point_3>(patches[correspondence[0].first][correspondence[0].second]);
-    const Point_3& point2 = get<Point_3>(patches[correspondence[1].first][correspondence[1].second]);
+    const Point_3& point1 = get<Point_3>(patch_range[correspondence[0].first][correspondence[0].second]);
+    const Point_3& point2 = get<Point_3>(patch_range[correspondence[1].first][correspondence[1].second]);
     const PointNT src_idx(point1.x(), point1.y(), point1.z());
     const PointNT tgt_idx(point2.x(), point2.y(), point2.z());
 
