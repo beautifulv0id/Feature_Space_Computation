@@ -181,12 +181,14 @@ int main (int argc, char** argv)
   readPLYsFromConfigFile(config_fname, point_ranges, point_map);
   int num_point_clouds = point_ranges.size();
 
+
   // This creates a 3D neighborhood + computes eigenvalues
   std::cout << "Computing feature ranges" << std::endl;
   std::vector<Feature_range> feature_ranges(num_point_clouds);
   for (int i = 0; i < num_point_clouds; ++i)
     computeFeatureRange(feature_ranges[i], point_ranges[i], point_map);
   
+
   // This constructs a KD tree in N dimensions 
   std::cout << "Constructing kd-trees" << std::endl;
   std::vector<Kd_tree_sptr> tree_range(num_point_clouds);
@@ -194,6 +196,7 @@ int main (int argc, char** argv)
   for (size_t i = 0; i < num_point_clouds; i++)
     constructKdTree(feature_ranges[i], tree_range[i], distances[i]);
   
+
   // compute correspondences
   std::cout << "Computing correspondences" << std::endl;
   uint sum_of_point_cloud_sizes = 0;
@@ -234,29 +237,31 @@ int main (int argc, char** argv)
         // every point in current point cloud
         for (size_t current_pc_point_index = 0; current_pc_point_index < point_ranges[current_pc_index].size(); current_pc_point_index++)
         {
-            const Point_d& current_pc_point_features = current_pc_features[current_pc_point_index];
-            // Do the nearest neighbor query
-            Knn other_pc_knn (other_pc_tree, // using the tree
-                    current_pc_point_features, // for query point i
-                    1, // searching for 1 nearest neighbor only
-                    0, true, distances[other_pc_index]); // default parameters
-
-            // index of nearest neighbor
-            std::size_t other_pc_nn_index
-              = other_pc_knn.begin()->first;
-            // distance between current point and nn in other point cloud
-            double current_dist = other_pc_knn.begin()->second;
-
             // used to look if point has been added already
             current_pc_map_it = current_pc_map.find(std::make_pair(other_pc_index, current_pc_point_index));
 
             // only if point wasn't matched before
             if(current_pc_map_it == current_pc_map.end()){
+
+              const Point_d& current_pc_point_features = current_pc_features[current_pc_point_index];
+              // Do the nearest neighbor query
+              Knn other_pc_knn (other_pc_tree, // using the tree
+                      current_pc_point_features, // for query point i
+                      1, // searching for 1 nearest neighbor only
+                      0, true, distances[other_pc_index]); // default parameters
+
+              // index of nearest neighbor
+              std::size_t other_pc_nn_index
+                = other_pc_knn.begin()->first;
+              // distance between current point and nn in other point cloud
+              double current_dist = other_pc_knn.begin()->second;
+
               // search other point in map
               other_pc_map_it = other_pc_map.find(std::make_pair(current_pc_index, other_pc_nn_index));
 
               // if nn wasn't matches by point within same point cloud before
               if(other_pc_map_it == other_pc_map.end()){
+                // match back
                 const Point_d& nearest_neighbor_features = other_pc_features[other_pc_nn_index];
                 Knn current_knn (current_pc_tree, // using the tree
                     nearest_neighbor_features, // for query point i
@@ -355,7 +360,7 @@ int main (int argc, char** argv)
 
   int num_global_coordinates = global_coordinate - 1;
   
-  std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl
+  std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl;
   
   // // TODO 4. Call CGAL wrapper with feature
   CGAL::OpenGR::GRET_SDP<Kernel> matcher;
