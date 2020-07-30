@@ -55,8 +55,9 @@ using Index_map = CGAL::Second_of_pair_property_map<Indexed_Point>;
 using Eigen_analysis = CGAL::Classification::Local_eigen_analysis;
 
 // For computations in feature space
-constexpr unsigned int nb_neighbors = 8;
-constexpr unsigned int feature_space_dimension = 3;
+constexpr unsigned int num_features = 3;
+constexpr unsigned int nb_neighbors[] = {8, 12, 16};
+constexpr unsigned int feature_space_dimension = num_features * 3;
 using Dimension = CGAL::Dimension_tag<feature_space_dimension>;
 using Kernel_d = CGAL::Epick_d<Dimension>;
 using Point_d = Kernel_d::Point_d;
@@ -164,17 +165,28 @@ void constructKdTree(Feature_range& feature_range, Kd_tree_sptr& tree, Distance&
 
 template <typename FeatureRange, typename PointRange, typename PointMap>
 void computeFeatureRange(FeatureRange& feature_range, const PointRange& point_range, const PointMap& point_map){
+  typedef typename Kernel_d::FT Scalar;
   Neighborhood neighborhood = Neighborhood(point_range, point_map);
-  Eigen_analysis eigen = Eigen_analysis::create_from_point_set
-    (point_range, point_map, neighborhood.k_neighbor_query(nb_neighbors));
+  Eigen_analysis eigen[num_features];
+
+  for (size_t i = 0; i < num_features; i++)
+    eigen[i] = Eigen_analysis::create_from_point_set
+      (point_range, point_map, neighborhood.k_neighbor_query(nb_neighbors[i]));
   
-  Eigen_analysis::Eigenvalues eigenval;
-  feature_range.reserve(point_range.size());
+  feature_range.reserve(point_range.size());  
+  Scalar* feature_arr = (Scalar*) malloc(num_features * 3 * sizeof(Scalar));
   for (std::size_t j = 0; j < point_range.size(); ++ j)
   {
-    eigenval = eigen.eigenvalue(j);
-    feature_range.emplace_back(eigenval[0], eigenval[1], eigenval[2]);
+    for (size_t i = 0; i < num_features; i++){
+      const Eigen_analysis::Eigenvalues& eigenval = eigen[i].eigenvalue(j);
+      feature_arr[i*3]   = eigenval[0];
+      feature_arr[i*3+1] = eigenval[1];
+      feature_arr[i*3+2] = eigenval[2];
+    }
+    feature_range.emplace_back(num_features*3, feature_arr, feature_arr+(num_features*3));
   }
+
+  delete feature_arr;
 }
 
 template <typename PointRanges, typename FeatureRanges, typename TreeRange, typename DistancesRange, typename PatchRange, typename CorrespondenceRange>
@@ -193,6 +205,7 @@ int computePatchesAndCorrespondences(
     pc_start_index.push_back(sum_of_point_cloud_sizes);
     sum_of_point_cloud_sizes += point_range.size();
   }
+
 
   // hash maps
   std::vector<Map> map_range(num_point_clouds);
@@ -322,7 +335,9 @@ int main (int argc, char** argv)
   }
   
 
-  translatePointRange(point_ranges[1], Vector_3(0.1, 0, 0));
+  translatePointRange(point_ranges[1], Vector_3(0.3, 0, 0));
+
+
   // This creates a 3D neighborhood + computes eigenvalues
   std::cout << "Computing feature ranges" << std::endl;
   std::vector<Feature_range> feature_ranges(num_point_clouds);
@@ -340,8 +355,6 @@ int main (int argc, char** argv)
 
   // compute correspondences
   std::cout << "Computing correspondences" << std::endl;
-
-
   uint global_coordinate = 0;
   std::vector<std::vector<Indexed_Point>> patch_range(num_point_clouds);
   std::vector<std::vector<std::pair<int, int>>> correspondences_range;
@@ -350,6 +363,23 @@ int main (int argc, char** argv)
 
   
   std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl;
+
+
+  // CGAL::OpenGR::GRET_SDP<Kernel> matcher;
+  // matcher.registerPatches(patch_range, num_global_coordinates, CGAL::parameters::point_map(Point_map())
+  //                                               .vertex_index_map(Index_map()));
+
+  // std::vector<Indexed_Point> registered_patches;
+  // matcher.getRegisteredPatches(registered_patches, CGAL::parameters::point_map(Point_map()));
+
+  // std::ofstream out("registered_point_clouds.ply");
+  //   if (!out ||
+  //     !CGAL::write_ply_points(
+  //       out, registered_patches,
+  //       CGAL::parameters::point_map(Point_map())))
+  // {
+  //   return EXIT_FAILURE;
+  // }
 
   // cgal pcloud to pcl pcloud
   PointCloudT::ConstPtr pcloud1 = CGAL2PCL_Point_Cloud(point_ranges[0]);
@@ -360,7 +390,7 @@ int main (int argc, char** argv)
   viewer->addPointCloud<PointNT> (pcloud2, "point cloud 2");
   viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "point cloud 1");
   viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "point cloud 2");
-  viewer->initCameraParameters ();
+  viewer->initCameraParameters();
 
   for(int i = 0; i < correspondences_range.size(); i++){
     const std::vector<std::pair<int, int>>& correspondence = correspondences_range[i];
