@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 #include <string>
+#include <cmath>
 #include <unordered_map>
 
 #include <Eigen/Dense>
@@ -55,8 +56,8 @@ using Index_map = CGAL::Second_of_pair_property_map<Indexed_Point>;
 using Eigen_analysis = CGAL::Classification::Local_eigen_analysis;
 
 // For computations in feature space
-constexpr unsigned int num_features = 3;
-constexpr unsigned int nb_neighbors[] = {8, 12, 16};
+constexpr unsigned int num_features = 6;
+constexpr unsigned int nb_neighbors[] = {8, 16, 24, 28, 32, 36};
 constexpr unsigned int feature_space_dimension = num_features * 3;
 using Dimension = CGAL::Dimension_tag<feature_space_dimension>;
 using Kernel_d = CGAL::Epick_d<Dimension>;
@@ -87,6 +88,50 @@ typedef pcl::PointCloud<PointNT> PointCloudT;
 using MatrixX = Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>;
 
 
+
+
+struct Correspondence {
+  unsigned int pc_;
+  unsigned int idx_;
+
+  Correspondence(int pc, int idx) : pc_(pc), idx_(idx) {}
+};
+
+struct Correspondences {
+  private:
+  double total_feature_distance;
+  std::vector<Correspondence> correspondences;
+  public:
+
+
+  void add(const Correspondence& correspondence){
+    correspondences.emplace_back(correspondence.pc_, correspondence.idx_);
+  }
+
+  void add(int pc, int idx){
+    correspondences.emplace_back(pc, idx);
+  }
+
+  void updateTotalDistance(const double dist){
+    total_feature_distance += dist;
+  }
+
+  double getTotalDistance() const {
+    return total_feature_distance;
+  }
+
+  double getWeight() const {
+    return total_feature_distance / 2.0;
+  }
+
+  const Correspondence& operator[](int i) const {
+    return correspondences[i];
+  } 
+
+  const int size() const {return correspondences.size(); }
+  const std::vector<Correspondence>& vec() {return correspondences; }
+
+};
 // A hash function used to hash a pair of any kind 
 struct hash_pair { 
     template <class T1, class T2> 
@@ -100,8 +145,8 @@ struct hash_pair {
 
 // map
 // key: (pc_idx, curr_global_idx)
-// val: (other_global_idx, dist)
-using Map = std::unordered_map<std::pair<uint, uint>, std::pair<uint, double>, hash_pair>;
+// val: (pc_idx, dist)
+using Map = std::unordered_map<std::pair<uint, uint>, uint, hash_pair>;
 using Map_iterator = typename Map::iterator;
 using Map_value_type = typename Map::value_type::second_type;
 
@@ -198,20 +243,9 @@ int computePatchesAndCorrespondences(
                             PatchRange& patch_range,
                             CorrespondenceRange& correspondences_range){
   uint num_point_clouds = point_ranges.size();
-  uint sum_of_point_cloud_sizes = 0;
-  std::vector<uint> pc_start_index;
-  pc_start_index.reserve(num_point_clouds);
-  for (const auto& point_range : point_ranges){
-    pc_start_index.push_back(sum_of_point_cloud_sizes);
-    sum_of_point_cloud_sizes += point_range.size();
-  }
-
-
   // hash maps
   std::vector<Map> map_range(num_point_clouds);
-
-  uint global_coordinate = 0;
-  bool has_been_added = false;
+  bool correspondence_valid = false;
   
   // comute correspondences
   // for every point cloud
@@ -221,11 +255,13 @@ int computePatchesAndCorrespondences(
     const Feature_range& current_pc_features = feature_ranges[current_pc_index];
     Map& current_pc_map = map_range[current_pc_index];
     Map_iterator current_pc_map_it;
-    uint current_pc_start_index = pc_start_index[current_pc_index];
     // every point in current point cloud
     for (size_t current_pc_point_index = 0; current_pc_point_index < point_ranges[current_pc_index].size(); current_pc_point_index++)
     {
-      has_been_added = false;
+      correspondence_valid = false;
+      Correspondences correspondences;
+      correspondences.add(current_pc_index, current_pc_point_index);
+
       // compare to every other point cloud k
       for (size_t other_pc_index = 0; other_pc_index < num_point_clouds; other_pc_index++)
       {
@@ -234,7 +270,6 @@ int computePatchesAndCorrespondences(
           const Feature_range& other_pc_features = feature_ranges[other_pc_index];
           Map& other_pc_map = map_range[other_pc_index];
           Map_iterator other_pc_map_it;
-          uint other_pc_start_index = pc_start_index[other_pc_index];
 
           // used to look if point has been added already
           current_pc_map_it = current_pc_map.find(std::make_pair(other_pc_index, current_pc_point_index));
@@ -258,51 +293,61 @@ int computePatchesAndCorrespondences(
             // search other point in map
             other_pc_map_it = other_pc_map.find(std::make_pair(current_pc_index, other_pc_nn_index));
 
-            // if nn wasn't matches by point within same point cloud before
+            // IF NN WASNT MATCHED BEFORE
             if(other_pc_map_it == other_pc_map.end()){
+
               // match back
               const Point_d& nearest_neighbor_features = other_pc_features[other_pc_nn_index];
-              Knn current_knn (current_pc_tree, // using the tree
-                  nearest_neighbor_features, // for query point i
-                  1, // searching for 1 nearest neighbor only
-                  0, true, distance_range[current_pc_index]); // default parameters
+              bool matches_back = true;
+              double accum_dist = 0;
+              for (const Correspondence& correspondence : correspondences.vec())
+              {
+                Knn knn (*tree_range[correspondence.pc_], // using the tree
+                    nearest_neighbor_features, // for query point i
+                    1, // searching for 1 nearest neighbor only
+                    0, true, distance_range[correspondence.pc_]); // default parameters
 
-              // index of nearest neighbor
-              std::size_t current_pc_nn_index
-                = current_knn.begin()->first;
-
-              // if correspondence matches back add correspondence
-              if(current_pc_nn_index == (current_pc_index + current_pc_point_index)){
-                // update maps
-                other_pc_map[std::make_pair(current_pc_index, other_pc_nn_index)]
-                = std::make_pair(current_pc_start_index + current_pc_point_index, current_dist);
+                // index of nearest neighbor
+                std::size_t nn
+                  = knn.begin()->first;
                 
-                current_pc_map[std::make_pair(other_pc_index, current_pc_point_index)] 
-                  = std::make_pair(other_pc_start_index + other_pc_nn_index, current_dist);
-
-                std::vector<std::pair<int, int>> correspondence;
-                if(!has_been_added){
-                  correspondence.push_back(std::make_pair(current_pc_index, patch_range[current_pc_index].size()));
-                  patch_range[current_pc_index].push_back(std::make_pair(point_ranges[current_pc_index][current_pc_point_index], global_coordinate));
+                // if it matches back
+                if (nn == correspondence.idx_)
+                {
+                  accum_dist += knn.begin()->second;
                 }
-
-                // add other to other patch
-                correspondence.push_back(std::make_pair(other_pc_index, patch_range[other_pc_index].size()));
-                patch_range[other_pc_index].push_back(std::make_pair(point_ranges[other_pc_index][other_pc_nn_index], global_coordinate));
-
-                correspondences_range.push_back(std::move(correspondence));
-                has_been_added = true;
+                else {
+                  matches_back = false;
+                  break;
+                }
+                
+              }
+              
+              if(matches_back){
+                // add correspondence
+                correspondences.add(other_pc_index, other_pc_nn_index);
+                accum_dist += current_dist;
+                correspondences.updateTotalDistance(accum_dist);
+                correspondence_valid = true;
               }
             } 
           }
         }
-        if (has_been_added)
-          global_coordinate++;
+      }
+      if (correspondence_valid){
+        // update maps
+        for (int i = 0; i < correspondences.size(); i++)
+          for (size_t j = 0; j < correspondences.size(); j++)
+            if(i != j)
+              map_range[correspondences[i].pc_][std::make_pair(correspondences[j].pc_, correspondences[i].idx_)]
+              = correspondences[j].idx_;
+        
+        correspondences_range.push(correspondences);
       }
     }
   }  
 
-  return global_coordinate - 1;
+  return correspondences_range.size();
 }
 
 template <typename PointRange>
@@ -357,7 +402,13 @@ int main (int argc, char** argv)
   std::cout << "Computing correspondences" << std::endl;
   uint global_coordinate = 0;
   std::vector<std::vector<Indexed_Point>> patch_range(num_point_clouds);
-  std::vector<std::vector<std::pair<int, int>>> correspondences_range;
+
+  auto compare = [](const Correspondences& lhs, const Correspondences& rhs)
+                {
+                    return lhs.getWeight()  > rhs.getWeight();
+                };
+
+  std::priority_queue<Correspondences, std::vector<Correspondences>, decltype(compare)> correspondences_range(compare);
 
   int num_global_coordinates = computePatchesAndCorrespondences(point_ranges, feature_ranges, tree_range, distance_range, patch_range, correspondences_range);
 
@@ -392,10 +443,11 @@ int main (int argc, char** argv)
   viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "point cloud 2");
   viewer->initCameraParameters();
 
-  for(int i = 0; i < correspondences_range.size(); i++){
-    const std::vector<std::pair<int, int>>& correspondence = correspondences_range[i];
-    const Point_3& point1 = get<Point_3>(patch_range[correspondence[0].first][correspondence[0].second]);
-    const Point_3& point2 = get<Point_3>(patch_range[correspondence[1].first][correspondence[1].second]);
+
+  for(int i = 0; i < 1000 && i < correspondences_range.size(); i++){
+    const Correspondences& correspondence = correspondences_range.top();
+    const Point_3& point1 = point_ranges[correspondence[0].pc_][correspondence[0].idx_];
+    const Point_3& point2 = point_ranges[correspondence[1].pc_][correspondence[1].idx_];
     const PointNT src_idx(point1.x(), point1.y(), point1.z());
     const PointNT tgt_idx(point2.x(), point2.y(), point2.z());
 
@@ -411,6 +463,8 @@ int main (int argc, char** argv)
     b /= max_channel;
 
     viewer->addLine<PointNT, PointNT>(src_idx, tgt_idx, r, g, b, lineID);
+    std::cout << correspondence.getWeight() << std::endl;
+    correspondences_range.pop();
   }
 
   while (!viewer->wasStopped ())
