@@ -56,8 +56,8 @@ using Index_map = CGAL::Second_of_pair_property_map<Indexed_Point>;
 using Eigen_analysis = CGAL::Classification::Local_eigen_analysis;
 
 // For computations in feature space
-constexpr unsigned int num_features = 6;
-constexpr unsigned int nb_neighbors[] = {8, 16, 24, 28, 32, 36};
+constexpr unsigned int num_features = 5;
+constexpr unsigned int nb_neighbors[] = {4, 8, 16, 24, 28};
 constexpr unsigned int feature_space_dimension = num_features * 3;
 using Dimension = CGAL::Dimension_tag<feature_space_dimension>;
 using Kernel_d = CGAL::Epick_d<Dimension>;
@@ -88,6 +88,12 @@ typedef pcl::PointCloud<PointNT> PointCloudT;
 using MatrixX = Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>;
 
 
+int faculty(int val) {
+  int res = 1;
+  while(val > 0)
+    res *= val--;
+  return res;
+}
 
 
 struct Correspondence {
@@ -101,8 +107,12 @@ struct Correspondences {
   private:
   double total_feature_distance;
   std::vector<Correspondence> correspondences;
+
+
+
   public:
 
+  Correspondences() : total_feature_distance(0) {}
 
   void add(const Correspondence& correspondence){
     correspondences.emplace_back(correspondence.pc_, correspondence.idx_);
@@ -121,7 +131,7 @@ struct Correspondences {
   }
 
   double getWeight() const {
-    return total_feature_distance / 2.0;
+    return total_feature_distance / (double) faculty(size());
   }
 
   const Correspondence& operator[](int i) const {
@@ -129,7 +139,7 @@ struct Correspondences {
   } 
 
   const int size() const {return correspondences.size(); }
-  const std::vector<Correspondence>& vec() {return correspondences; }
+  const std::vector<Correspondence>& vec() const  {return correspondences; }
 
 };
 // A hash function used to hash a pair of any kind 
@@ -235,7 +245,7 @@ void computeFeatureRange(FeatureRange& feature_range, const PointRange& point_ra
 }
 
 template <typename PointRanges, typename FeatureRanges, typename TreeRange, typename DistancesRange, typename PatchRange, typename CorrespondenceRange>
-int computePatchesAndCorrespondences(
+void computePatchesAndCorrespondences(
                             const PointRanges& point_ranges,
                             const FeatureRanges& feature_ranges,
                             const TreeRange& tree_range,
@@ -246,12 +256,9 @@ int computePatchesAndCorrespondences(
   // hash maps
   std::vector<Map> map_range(num_point_clouds);
   bool correspondence_valid = false;
-  
-  // comute correspondences
   // for every point cloud
   for (size_t current_pc_index = 0; current_pc_index < num_point_clouds; current_pc_index++)
   {
-    Kd_tree& current_pc_tree = *tree_range[current_pc_index]; 
     const Feature_range& current_pc_features = feature_ranges[current_pc_index];
     Map& current_pc_map = map_range[current_pc_index];
     Map_iterator current_pc_map_it;
@@ -297,13 +304,13 @@ int computePatchesAndCorrespondences(
             if(other_pc_map_it == other_pc_map.end()){
 
               // match back
-              const Point_d& nearest_neighbor_features = other_pc_features[other_pc_nn_index];
+              const Point_d& other_pc_nn_features = other_pc_features[other_pc_nn_index];
               bool matches_back = true;
               double accum_dist = 0;
               for (const Correspondence& correspondence : correspondences.vec())
               {
                 Knn knn (*tree_range[correspondence.pc_], // using the tree
-                    nearest_neighbor_features, // for query point i
+                    other_pc_nn_features, // for query point i
                     1, // searching for 1 nearest neighbor only
                     0, true, distance_range[correspondence.pc_]); // default parameters
 
@@ -322,6 +329,29 @@ int computePatchesAndCorrespondences(
                 }
                 
               }
+
+              // for (int i = 1; i < correspondences.size()-1; i++)
+              // {
+              //   const Point_d& feature = feature_ranges[correspondences[i].pc_][correspondences[i].idx_];
+              //   Knn knn(other_pc_tree, // using the tree
+              //       feature, // for query point i
+              //       1, // searching for 1 nearest neighbor only
+              //       0, true, distance_range[correspondences[i].pc_]); // default parameters)
+
+              //     std::size_t nn
+              //     = knn.begin()->first;
+
+              //   // if it matches back
+              //   if (nn == other_pc_nn_index)
+              //   {
+              //     accum_dist += knn.begin()->second;
+              //   }
+              //   else {
+              //     matches_back = false;
+              //     break;
+              //   }
+              // }
+              
               
               if(matches_back){
                 // add correspondence
@@ -346,8 +376,6 @@ int computePatchesAndCorrespondences(
       }
     }
   }  
-
-  return correspondences_range.size();
 }
 
 template <typename PointRange>
@@ -373,15 +401,13 @@ int main (int argc, char** argv)
   readPLYsFromConfigFile(config_fname, point_ranges, point_map);
   int num_point_clouds = point_ranges.size();
 
-  if (num_point_clouds != 2)
+  if (num_point_clouds < 2)
   {
-    std::cerr << "correspondence visualization currently only for two point clouds" << std::endl;
+    std::cerr << "correspondence visualization needs at least two point clouds" << std::endl;
     return 0;
   }
-  
-
   translatePointRange(point_ranges[1], Vector_3(0.3, 0, 0));
-
+  
 
   // This creates a 3D neighborhood + computes eigenvalues
   std::cout << "Computing feature ranges" << std::endl;
@@ -405,32 +431,26 @@ int main (int argc, char** argv)
 
   auto compare = [](const Correspondences& lhs, const Correspondences& rhs)
                 {
-                    return lhs.getWeight()  > rhs.getWeight();
+                    return lhs.getTotalDistance()  > rhs.getTotalDistance();
                 };
 
   std::priority_queue<Correspondences, std::vector<Correspondences>, decltype(compare)> correspondences_range(compare);
 
-  int num_global_coordinates = computePatchesAndCorrespondences(point_ranges, feature_ranges, tree_range, distance_range, patch_range, correspondences_range);
+  computePatchesAndCorrespondences(point_ranges, feature_ranges, tree_range, distance_range, patch_range, correspondences_range);
 
-  
+  int global_index;
+  for(global_index = 0; global_index < 1000 && global_index < correspondences_range.size(); global_index++){
+    const Correspondences& correspondences = correspondences_range.top();
+    for (const Correspondence& correspondence : correspondences.vec())
+      patch_range[correspondence.pc_].push_back(
+        std::make_pair(point_ranges[correspondence.pc_][correspondence.idx_],global_index)
+        );
+    correspondences_range.pop();
+  }
+
+  int num_global_coordinates = global_index;
+
   std::cout << "num_global_coordinates: " << num_global_coordinates << std::endl;
-
-
-  // CGAL::OpenGR::GRET_SDP<Kernel> matcher;
-  // matcher.registerPatches(patch_range, num_global_coordinates, CGAL::parameters::point_map(Point_map())
-  //                                               .vertex_index_map(Index_map()));
-
-  // std::vector<Indexed_Point> registered_patches;
-  // matcher.getRegisteredPatches(registered_patches, CGAL::parameters::point_map(Point_map()));
-
-  // std::ofstream out("registered_point_clouds.ply");
-  //   if (!out ||
-  //     !CGAL::write_ply_points(
-  //       out, registered_patches,
-  //       CGAL::parameters::point_map(Point_map())))
-  // {
-  //   return EXIT_FAILURE;
-  // }
 
   // cgal pcloud to pcl pcloud
   PointCloudT::ConstPtr pcloud1 = CGAL2PCL_Point_Cloud(point_ranges[0]);
@@ -444,7 +464,7 @@ int main (int argc, char** argv)
   viewer->initCameraParameters();
 
 
-  for(int i = 0; i < 1000 && i < correspondences_range.size(); i++){
+  for(int i = 0; i < 200 && i < correspondences_range.size(); i++){
     const Correspondences& correspondence = correspondences_range.top();
     const Point_3& point1 = point_ranges[correspondence[0].pc_][correspondence[0].idx_];
     const Point_3& point2 = point_ranges[correspondence[1].pc_][correspondence[1].idx_];
@@ -463,7 +483,7 @@ int main (int argc, char** argv)
     b /= max_channel;
 
     viewer->addLine<PointNT, PointNT>(src_idx, tgt_idx, r, g, b, lineID);
-    std::cout << correspondence.getWeight() << std::endl;
+    std::cout << correspondence.getTotalDistance() << " " << correspondence[0].idx_ << " " << correspondence[1].idx_ << std::endl;
     correspondences_range.pop();
   }
 
