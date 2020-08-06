@@ -11,6 +11,17 @@
 #include <CGAL/IO/read_ply_points.h>
 #include <CGAL/IO/write_ply_points.h>
 
+#include <CGAL/grid_simplify_point_set.h>
+#include <CGAL/wlop_simplify_and_regularize_point_set.h>
+
+// Concurrency
+#ifdef CGAL_LINKED_WITH_TBB
+typedef CGAL::Parallel_tag Concurrency_tag;
+#else
+typedef CGAL::Sequential_tag Concurrency_tag;
+#endif
+
+
 #define CGAL_LINKED_WITH_OPENGR
 #include <CGAL/OpenGR/gret_sdp.h>
 
@@ -51,17 +62,17 @@ using Index_map = CGAL::Second_of_pair_property_map<Indexed_Point>;
 
 
 // For computations in feature space
-constexpr unsigned int num_features = 5;
-constexpr unsigned int nb_neighbors[] = {4, 8, 16, 24, 28};
-constexpr unsigned int feature_space_dimension = num_features * 3;
+const unsigned int Neighbors = 1;
+const double delta = 0.00001;
+constexpr unsigned int feature_space_dimension = 3;
 using Dimension = CGAL::Dimension_tag<feature_space_dimension>;
 using Kernel_d = CGAL::Epick_d<Dimension>;
 using Point_d = Kernel_d::Point_d;
 using Feature_range = std::vector<Point_d>;
 
 // KD tree in N dimension
-using Search_traits_base = CGAL::Search_traits_d<Kernel_d, Dimension>;
-using Point_d_map = typename CGAL::Pointer_property_map<Point_d>::type;
+using Search_traits_base = CGAL::Search_traits_3<Kernel>;
+using Point_d_map = typename CGAL::Pointer_property_map<Point_3>::type;
 using Search_traits = CGAL::Search_traits_adapter<std::size_t, Point_d_map, Search_traits_base>;
 using Knn = CGAL::Orthogonal_k_neighbor_search<Search_traits>;
 using Kd_tree = typename Knn::Tree;
@@ -83,6 +94,15 @@ using namespace std;
 
 // matrix graph
 using MatrixX = Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>;
+
+
+struct Correspondence {
+  unsigned int pc_;
+  unsigned int idx_;
+
+  Correspondence(int pc, int idx) : pc_(pc), idx_(idx) {}
+};
+
 
 template <typename PointMap>
 void extractPCAndTrFromStandfordConfFile(
@@ -176,6 +196,18 @@ void extractPCAndTrFromStandfordConfFile(
 }
 
 
+void constructKdTree(Point_range& feature_range, Kd_tree_sptr& tree, Distance& distance){
+  Point_d_map point_d_map = CGAL::make_property_map(feature_range);
+  tree.reset(
+    new Kd_tree(
+    boost::counting_iterator<std::size_t>(0), boost::counting_iterator<std::size_t>(feature_range.size()),
+    Splitter(), Search_traits(point_d_map)
+    ));
+  tree->build();
+  distance = Distance(point_d_map);
+}
+
+
 template <typename PointRange>
 pcl::PointCloud<pcl::PointXYZ>::ConstPtr CGAL2PCL_Point_Cloud(const PointRange& cgal_pcloud){
     PointCloudT::Ptr pcl_pcloud (new PointCloudT);
@@ -198,13 +230,89 @@ int main (int argc, char** argv)
   extractPCAndTrFromStandfordConfFile(config_fname, transform_range, point_ranges, point_map);
   int num_point_clouds = point_ranges.size();
 
-  Point_range merged_point_range;
+  vector<Point_range> transformed_point_ranges(num_point_clouds);
   for (size_t i = 0; i < num_point_clouds; i++)
     for (size_t j = 0; j < point_ranges[i].size(); j++)
-      merged_point_range.push_back(point_ranges[i][j].transform(transform_range[i].inverse()));
+      transformed_point_ranges[i].push_back(point_ranges[i][j].transform(transform_range[i].inverse()));
+
+  Point_range merged_point_range;
+  for (size_t i = 0; i < num_point_clouds; i++)
+    for (size_t j = 0; j < transformed_point_ranges[i].size(); j++)
+      merged_point_range.push_back(transformed_point_ranges[i][j]);
+
+  //simplification by clustering using erase-remove idiom
+  double cell_size = 0.01;
+  merged_point_range.erase(CGAL::grid_simplify_point_set(merged_point_range, cell_size),
+               merged_point_range.end());
+  // Optional: after erase(), use Scott Meyer's "swap trick" to trim excess capacity
+
+  cout << "merged size: " << merged_point_range.size() << endl;
+
+  // sample merged points
+  Point_range& sampled_point_range = merged_point_range;
+
+  //   //parameters
+  // cout << "starting wlop" << endl;
+  // const int retain_num = 1000;
+  // const double retain_percentage = 100 * (double) retain_num / (double) merged_point_range.size();   // percentage of points to retain.
+  // const double neighbor_radius = 0.5;   // neighbors size.
+  // CGAL::wlop_simplify_and_regularize_point_set<Concurrency_tag>
+  //   (merged_point_range, std::back_inserter(sampled_point_range),
+  //    CGAL::parameters::select_percentage(retain_percentage)
+  //    );
+  // cout << "ending wlop" << endl;
+  // cout << "sampled size: " << sampled_point_range.size() << endl;
+  
+  int num_global_coordinates = sampled_point_range.size();
+
+  // construct a KD tree in N dimensions 
+  std::cout << "Constructing kd-trees" << std::endl;
+  std::vector<Kd_tree_sptr> tree_range(num_point_clouds);
+  std::vector<Distance> distance_range(num_point_clouds);
+  for (size_t i = 0; i < num_point_clouds; i++)
+    constructKdTree(transformed_point_ranges[i], tree_range[i], distance_range[i]);
+
+
+  // compute correspondences & patches
+  vector<vector<Indexed_Point>> patch_range(num_point_clouds);
+  vector<vector<Correspondence>> correspondences_range;
+  for (size_t i = 0; i < sampled_point_range.size(); i++)
+  {
+    vector<Correspondence> correspondences;
+    for (size_t j = 0; j < num_point_clouds; j++)
+    {
+      Knn search (*tree_range[j], // using the tree
+                    sampled_point_range[i], // for query point i
+                    Neighbors, // searching for 1 nearest neighbor only
+                    0, true, distance_range[j]); // default parameters
+       double dist = search.begin()->second;
+       if(dist < delta){
+        // index of nearest neighbor
+        std::size_t nn
+          = search.begin()->first;
+        correspondences.emplace_back(j, nn);
+        patch_range[j].emplace_back(point_ranges[j][nn] , i);
+       }
+    }
+    correspondences_range.push_back(move(correspondences));
+  }
+  
+
+  CGAL::OpenGR::GRET_SDP<Kernel> matcher;
+  matcher.registerPatches(patch_range, num_global_coordinates, CGAL::parameters::point_map(Point_map())
+                                                .vertex_index_map(Index_map()));
+
+  vector<Kernel::Aff_transformation_3> trafos;
+  matcher.getTransformations(trafos);
+
+  Point_range registered_points;
+  for (size_t i = 0; i < num_point_clouds; i++)
+    for (size_t j = 0; j < point_ranges[i].size(); j++)
+      registered_points.push_back(point_ranges[i][j].transform(trafos[i]));
+
 
   // cgal pcloud to pcl pcloud
-  PointCloudT::ConstPtr pcloud = CGAL2PCL_Point_Cloud(merged_point_range);
+  PointCloudT::ConstPtr pcloud = CGAL2PCL_Point_Cloud(registered_points);
   pcl::visualization::PCLVisualizer::Ptr viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
   viewer->setBackgroundColor (0, 0, 0);
   viewer->addPointCloud<PointNT> (pcloud, "merged point cloud");
