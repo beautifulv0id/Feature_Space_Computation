@@ -15,6 +15,7 @@ set(targets
 feature_space_computation
 corresponcences_visualization
 gret_sdp_wrapper_test
+boost_iterator
 )
 
 

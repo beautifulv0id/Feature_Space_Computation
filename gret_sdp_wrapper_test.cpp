@@ -62,8 +62,6 @@ using Index_map = CGAL::Second_of_pair_property_map<Indexed_Point>;
 
 
 // For computations in feature space
-const unsigned int Neighbors = 1;
-const double delta = 0.00001;
 constexpr unsigned int feature_space_dimension = 3;
 using Dimension = CGAL::Dimension_tag<feature_space_dimension>;
 using Kernel_d = CGAL::Epick_d<Dimension>;
@@ -189,7 +187,7 @@ void extractPCAndTrFromStandfordConfFile(
           std::cerr << "Error: cannot read file " << file << std::endl;
           throw std::exception();
         } else {
-          std::cout << "Read ply-file: " << file << "\t" << pc_range[i].size() << std::endl;
+          std::cout << "Read ply-file: " << file << setw(20) << pc_range[i].size() << std::endl;
         }
         pc_file.close();
     }
@@ -219,9 +217,61 @@ pcl::PointCloud<pcl::PointXYZ>::ConstPtr CGAL2PCL_Point_Cloud(const PointRange& 
     return pcl_pcloud;
 }
 
+template <typename PointCloudRange, typename PatchRange, typename TreeRange, typename DistanceRange>
+void computeCorrectCorrespondences( const PointCloudRange& point_clouds,
+                                    PatchRange& patches,
+                                    Point_range& merged_point_cloud,
+                                    const TreeRange& trees,
+                                    const DistanceRange& distances, double delta){
+  for (size_t i = 0; i < merged_point_cloud.size(); i++) {
+    for (size_t j = 0; j < patches.size(); j++) {
+      Knn search (*trees[j], // using the tree
+                    merged_point_cloud[i], // for query point i
+                    1, // searching for 1 nearest neighbor only
+                    0, true, distances[j]); // default parameters
+       double dist = search.begin()->second;
+       if(dist < delta){
+        // index of nearest neighbor
+        std::size_t nn
+          = search.begin()->first;
+        patches[j].emplace_back(point_clouds[j][nn] , i);
+       }
+    }
+  }                                  
+}
+
+
+template <typename PointCloudRange, typename PatchRange, typename TreeRange, typename DistanceRange>
+void computeRandomKNNCorrespondences( const PointCloudRange& point_clouds,
+                                    PatchRange& patches,
+                                    Point_range& merged_point_cloud,
+                                    const TreeRange& trees,
+                                    const DistanceRange& distances, double delta, int num_neighbors){
+  for (size_t i = 0; i < merged_point_cloud.size(); i++) {
+    for (size_t j = 0; j < patches.size(); j++) {
+      Knn search (*trees[j], // using the tree
+                    merged_point_cloud[i], // for query point i
+                    num_neighbors, // searching for 1 nearest neighbor only
+                    0, true, distances[j]); // default parameters
+        // index of nearest neighbor
+
+        Knn::iterator it = search.begin();
+        it+= rand()%num_neighbors;
+
+        std::size_t nn
+          = it->first;
+        patches[j].emplace_back(point_clouds[j][nn] , i);
+    }
+  }                                  
+}
+
+
 int main (int argc, char** argv)
 {
   const char* config_fname = (argc>1)?argv[1]:"../../assets/bunny/data/bun.conf";
+  const double delta = (argc>2)? stod(argv[2]):0.00001;
+  const double cell_size = (argc>3)? stod(argv[3]):0.01;
+  const int num_neighbors = (argc>4)? stod(argv[4]):1;
 
   vector<Point_range> point_ranges;
   CGAL::Identity_property_map<Point_3> point_map;
@@ -231,6 +281,7 @@ int main (int argc, char** argv)
   int num_point_clouds = point_ranges.size();
 
   vector<Point_range> transformed_point_ranges(num_point_clouds);
+  // construct transformed patches
   for (size_t i = 0; i < num_point_clouds; i++)
     for (size_t j = 0; j < point_ranges[i].size(); j++)
       transformed_point_ranges[i].push_back(point_ranges[i][j].transform(transform_range[i].inverse()));
@@ -241,7 +292,6 @@ int main (int argc, char** argv)
       merged_point_range.push_back(transformed_point_ranges[i][j]);
 
   //simplification by clustering using erase-remove idiom
-  double cell_size = 0.01;
   merged_point_range.erase(CGAL::grid_simplify_point_set(merged_point_range, cell_size),
                merged_point_range.end());
   // Optional: after erase(), use Scott Meyer's "swap trick" to trim excess capacity
@@ -263,6 +313,7 @@ int main (int argc, char** argv)
   // cout << "ending wlop" << endl;
   // cout << "sampled size: " << sampled_point_range.size() << endl;
   
+
   int num_global_coordinates = sampled_point_range.size();
 
   // construct a KD tree in N dimensions 
@@ -275,29 +326,13 @@ int main (int argc, char** argv)
 
   // compute correspondences & patches
   vector<vector<Indexed_Point>> patch_range(num_point_clouds);
-  vector<vector<Correspondence>> correspondences_range;
-  for (size_t i = 0; i < sampled_point_range.size(); i++)
-  {
-    vector<Correspondence> correspondences;
-    for (size_t j = 0; j < num_point_clouds; j++)
-    {
-      Knn search (*tree_range[j], // using the tree
-                    sampled_point_range[i], // for query point i
-                    Neighbors, // searching for 1 nearest neighbor only
-                    0, true, distance_range[j]); // default parameters
-       double dist = search.begin()->second;
-       if(dist < delta){
-        // index of nearest neighbor
-        std::size_t nn
-          = search.begin()->first;
-        correspondences.emplace_back(j, nn);
-        patch_range[j].emplace_back(point_ranges[j][nn] , i);
-       }
-    }
-    correspondences_range.push_back(move(correspondences));
-  }
-  
 
+  // computeCorrectCorrespondences(point_ranges, patch_range, sampled_point_range, 
+  //                               tree_range, distance_range, delta);
+
+  computeRandomKNNCorrespondences(point_ranges, patch_range, sampled_point_range,
+                                  tree_range, distance_range, delta, num_neighbors);
+  
   CGAL::OpenGR::GRET_SDP<Kernel> matcher;
   matcher.registerPatches(patch_range, num_global_coordinates, CGAL::parameters::point_map(Point_map())
                                                 .vertex_index_map(Index_map()));
