@@ -408,7 +408,7 @@ int main (int argc, char** argv)
   }
   translatePointRange(point_ranges[1], Vector_3(0.3, 0, 0));
   
-
+  
   // This creates a 3D neighborhood + computes eigenvalues
   std::cout << "Computing feature ranges" << std::endl;
   std::vector<Feature_range> feature_ranges(num_point_clouds);

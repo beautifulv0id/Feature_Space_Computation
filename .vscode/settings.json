@@ -1,14 +1,14 @@
 {    
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     "cmake.configureSettings": {
         "MOSEK_ROOT_DIR": "/home/felix/mosek/",
-        "OpenGR_DIR": "/media/felix/U/Workspace/OpenGR/build/install/lib/cmake",
-        "CGAL_DIR": "/media/felix/U/Workspace/cgal/build/install/lib/cmake/CGAL",
+        "OpenGR_DIR": "/home/felix/Workspace/GSoC20/OpenGR_Fork/build/install/lib/cmake",
+        "CGAL_DIR": "/home/felix/Workspace/GSoC20/cgal-felix/build/install/lib/cmake/CGAL",
         "OpenGR_USE_MOSEK": "ON"
     },
     "cmake.debugConfig": {
         "args" : ["/home/felix/Workspace/GSoC20/Feature_Space_Computation/build/gret-sdp-data/Armadillo_config.json"]
     },
-    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     "files.associations": {
         "cctype": "cpp",
         "clocale": "cpp",
