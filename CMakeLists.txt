@@ -12,10 +12,8 @@ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/")
 # TARGETS
 ###############################################################################
 set(targets
-feature_space_computation
-corresponcences_visualization
 gret_sdp_wrapper_test
-boost_iterator
+feature_matching_evaluation
 )
 
 
